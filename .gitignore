@@ -1,0 +1,14 @@
+node_modules/
+build/
+.env
+.env.*
+!.env.example
+output/
+coverage/
+*.log
+*.pem
+*.key
+*.tsbuildinfo
+logs/
+tmp/
+.DS_Store
