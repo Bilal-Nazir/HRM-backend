@@ -65,6 +65,8 @@ services:
     image: mongo:8.0
     mem_limit: 640m
     command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
+    # SSH tunnel target only; never expose HRM MongoDB on a public interface.
+    ports: ["127.0.0.1:27019:27017"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Required}
@@ -79,7 +81,7 @@ services:
       timeout: 10s
       retries: 12
       start_period: 40s
-    networks: [storage]
+    networks: [storage, ssh_access]
   redis:
     <<: *common
     image: redis:7.4-alpine
@@ -97,6 +99,7 @@ services:
 networks:
   web:
   storage: {internal: true}
+  ssh_access:
 volumes:
   mongo_data:
   redis_data:

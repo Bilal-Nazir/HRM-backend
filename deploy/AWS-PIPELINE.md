@@ -41,6 +41,8 @@ registry or on-server build step. GitHub/AWS account limits and charges still ap
 - `/opt/hrm/ssh-dispatch.sh`: restricted deployment-only SSH command.
 - `hrm-deploy`: dedicated account, no general shell via its Actions key, no port forwarding.
 - Host Nginx proxies the IP-only virtual host to `127.0.0.1:18080`.
+- HRM MongoDB publishes only to server loopback `127.0.0.1:27019` for an SSH tunnel;
+  it is not reachable on the server's public interface.
 - Existing CustomerCore Nginx host, MongoDB, Redis, Node, and Java services are not replaced.
 
 Runtime memory caps total approximately 1.6 GiB. Monitor the shared server's RAM,
@@ -89,6 +91,14 @@ sudo docker compose --env-file /opt/hrm/.env --env-file /opt/hrm/images.env -f /
 Use the root-only `.env` to retrieve the initial admin password privately on your
 own terminal, then change it through the app. Never paste it in GitHub or chat.
 New deployment creates an empty HRM database; local development data is not migrated.
+
+### MongoDB Compass over SSH
+
+The local `aws-dev` SSH alias forwards `127.0.0.1:27019` on the workstation to
+`127.0.0.1:27019` on the server. Keep `ssh aws-dev` open while using Compass.
+Connect with `mongodb://hrm:<password>@127.0.0.1:27019/hrm?authSource=hrm&directConnection=true`.
+Retrieve the app password privately from `MONGO_APP_PASSWORD` in `/opt/hrm/.env`.
+The SSH alias's existing port 27018 continues to forward the separate host MongoDB.
 
 Current requested address: `https://3.126.250.133/admin/login`. HTTP redirects to
 HTTPS. Let's Encrypt IP certificates last about six days, so the
