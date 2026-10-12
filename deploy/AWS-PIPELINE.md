@@ -1,17 +1,15 @@
 # GitHub → existing AWS server
 
-## Current status: prepared, not activated
+## Current setup
 
-The workflows and server configuration are local files only. Docker installation
-on AWS was blocked by an existing unfinished kernel-package update. At the owner's
-request, that update was not repaired. No deployment account, Actions secrets,
-HRM containers, or Nginx virtual host has been configured, and these files have
-not been pushed. Do not expect deployment to succeed until the setup below is done.
+Docker and Compose are installed on the existing AWS server. The `hrm-deploy`
+account, Actions secrets, and separate IP-only Nginx host are configured.
+The existing CustomerCore site remains enabled. Check both Actions runs and
+the live health endpoint after pushing either repository.
 
 ## One-time activation checklist
 
-1. Have the server administrator resolve the package dependency issue and install
-   Docker Engine plus Compose v2. Do not reboot the shared server without approval.
+1. Install Docker Engine plus Compose v2 on the server.
 2. Generate a dedicated Ed25519 deployment key, and obtain the server host public
    key over the already trusted `ssh aws-dev` connection (do not blindly trust keyscan).
 3. Copy `compose.aws.yaml`, `Caddyfile`, `mongo-init.js`, `deploy-release.sh`,

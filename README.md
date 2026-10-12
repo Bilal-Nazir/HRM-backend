@@ -78,5 +78,5 @@ For a single-server frontend, backend, MongoDB, Redis, and HTTPS stack, see
 [deploy/README.md](deploy/README.md). Keep `HRM-frontend` alongside this repository.
 
 For push-to-main deployment to the existing AWS server, see
-[deploy/AWS-PIPELINE.md](deploy/AWS-PIPELINE.md). Pipeline files are prepared but
-not activated; server provisioning and GitHub secrets are still required.
+[deploy/AWS-PIPELINE.md](deploy/AWS-PIPELINE.md). The deployment account, server
+configuration, and GitHub secrets have been set up for this AWS instance.
