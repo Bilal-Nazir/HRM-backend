@@ -4,6 +4,7 @@
 
 Docker and Compose are installed on the existing AWS server. The `hrm-deploy`
 account, Actions secrets, and separate IP-only Nginx host are configured.
+The IP host has a trusted Let's Encrypt certificate and an automatic renewal timer.
 The existing CustomerCore site remains enabled. Check both Actions runs and
 the live health endpoint after pushing either repository.
 
@@ -24,7 +25,7 @@ the live health endpoint after pushing either repository.
 6. Commit/push the Docker files and workflow in each repository. Inspect both
    Actions runs and verify container health, login, and persistence before use.
 
-Do not expose real employee data through the HTTP testing address.
+Use the HTTPS address for login and browser location check-in.
 
 Each repository has `.github/workflows/deploy.yml`. A push to `main` builds its
 production image on a GitHub-hosted runner and streams the compressed image over
@@ -85,10 +86,11 @@ Use the root-only `.env` to retrieve the initial admin password privately on you
 own terminal, then change it through the app. Never paste it in GitHub or chat.
 New deployment creates an empty HRM database; local development data is not migrated.
 
-Current requested address: `http://3.126.250.133/admin/login`. Plain HTTP is for
-testing only: credentials and tokens are not encrypted in transit, and browser
-geolocation will not work. Do not enter real employee data until HTTPS is enabled.
-For encrypted local testing, forward the private port through SSH and open localhost:
+Current requested address: `https://3.126.250.133/admin/login`. HTTP redirects to
+HTTPS. Let's Encrypt IP certificates last about six days, so the
+`hrm-cert-renew.timer` checks twice daily and reloads Nginx after renewal. Monitor
+the timer and certificate expiration; public IP changes require a new certificate.
+For a local tunnel, forward the private port through SSH and open localhost:
 
 ```sh
 ssh -N -L 3001:127.0.0.1:18080 aws-dev
