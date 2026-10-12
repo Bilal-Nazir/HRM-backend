@@ -63,8 +63,12 @@ Anyone able to push deployment code to main effectively controls the deployed ap
 limit repository write access and use branch protection where appropriate.
 
 The first image waits until the other repository has deployed its first image.
-Later pushes update only changed containers. A failed health check attempts to
-restore previous image tags. This cannot undo data migrations. Updates can cause
+After initial startup, backend pushes recreate only the backend container and
+frontend pushes recreate only the frontend container. MongoDB, Redis, the proxy,
+and the other app container are not restarted by routine releases. If the proxy
+is not running, deployment starts the full HRM stack for recovery. A failed
+health check attempts to restore previous image tags. This cannot undo data
+migrations. Updates can cause
 brief downtime; this is a single-server deployment, not zero-downtime infrastructure.
 
 ## What updates automatically

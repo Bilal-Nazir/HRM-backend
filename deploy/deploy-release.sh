@@ -28,7 +28,18 @@ if [[ -z $BACKEND_SHA || -z $FRONTEND_SHA ]]; then
 fi
 compose=(docker compose --env-file .env --env-file images.env -f compose.aws.yaml)
 "${compose[@]}" config --quiet
-if "${compose[@]}" up -d --wait --wait-timeout 240 &&
+deploy_scope=component
+if [[ $(docker inspect --format '{{.State.Running}}' hrm-proxy-1 2>/dev/null || true) != true ]]; then
+  deploy_scope=stack
+fi
+start_release() {
+  if [[ $deploy_scope == component ]]; then
+    "${compose[@]}" up -d --no-deps --wait --wait-timeout 240 "$component"
+  else
+    "${compose[@]}" up -d --wait --wait-timeout 240
+  fi
+}
+if start_release &&
    curl --fail --show-error --silent --retry 12 --retry-delay 2 --retry-all-errors --max-time 5 http://127.0.0.1:18080/api/health >/dev/null &&
    curl --fail --show-error --silent --retry 12 --retry-delay 2 --retry-all-errors --max-time 5 http://127.0.0.1:18080/login >/dev/null; then
   printf 'HRM %s deployed successfully: %s\n' "$component" "$sha"
@@ -48,7 +59,7 @@ else
   if [[ -n $old_backend && -n $old_frontend ]]; then
     BACKEND_SHA=$old_backend; FRONTEND_SHA=$old_frontend
     write_images
-    "${compose[@]}" up -d --wait --wait-timeout 240
+    start_release
     printf 'Restored previous application images; database changes are not rolled back.\n' >&2
   fi
   exit 1
