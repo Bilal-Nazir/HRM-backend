@@ -70,7 +70,7 @@ export const createFirstAdminScript = async () => {
     data: {
       [constants.fields.User.organizationId]: organization.id,
       [constants.fields.User.loginId]: "admin-001",
-      passwordHash: await hashPassword(initialPassword),
+      passwordHash: await hashPassword("Admin@123"),
       [constants.fields.User.isActive]: true,
       [constants.fields.User.isPlatformAdmin]: true,
     },
