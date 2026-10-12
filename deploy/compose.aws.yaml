@@ -1,0 +1,104 @@
+# Separate HRM stack behind the existing host Nginx; never takes over 80/443.
+name: hrm
+x-common: &common
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+services:
+  proxy:
+    <<: *common
+    image: caddy:2-alpine
+    mem_limit: 96m
+    environment:
+      SITE_ADDRESS: ":80"
+    ports: ["127.0.0.1:18080:80"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend: {condition: service_healthy}
+      backend: {condition: service_healthy}
+    networks: [web]
+  frontend:
+    <<: *common
+    image: hrm-frontend:${FRONTEND_SHA:?Missing frontend release}
+    pull_policy: never
+    mem_limit: 384m
+    init: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+    networks: [web]
+  backend:
+    <<: *common
+    image: hrm-backend:${BACKEND_SHA:?Missing backend release}
+    pull_policy: never
+    mem_limit: 384m
+    init: true
+    environment:
+      NODE_ENV: production
+      SERVER_PORT: 8080
+      LOG_LEVEL: info
+      DB_MONGO_URI: mongodb://hrm:${MONGO_APP_PASSWORD:?Required}@mongo:27017/hrm?authSource=hrm
+      DB_MONGO_DB_NAME: hrm
+      DB_REDIS_URL: redis://redis:6379
+      DB_REDIS_PASS: ${REDIS_PASSWORD:?Required}
+      JWT_SECRET: ${JWT_SECRET:?Required}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Required}
+    depends_on:
+      mongo: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+    networks: [web, storage]
+  mongo:
+    <<: *common
+    image: mongo:8.0
+    mem_limit: 640m
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.25"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Required}
+      MONGO_INITDB_DATABASE: hrm
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Required}
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/01-hrm.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+      start_period: 40s
+    networks: [storage]
+  redis:
+    <<: *common
+    image: redis:7.4-alpine
+    mem_limit: 128m
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Required}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy noeviction --requirepass \"$$REDIS_PASSWORD\""]
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    networks: [storage]
+networks:
+  web:
+  storage: {internal: true}
+volumes:
+  mongo_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

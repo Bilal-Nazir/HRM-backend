@@ -33,12 +33,11 @@ const startServer = async () => {
     },
   );
 
-  const server = app.listen(config.server.port, "0.0.0.0", async () => {
-    await Promise.all([MongoDatabase.initialize(), RedisDatabase.initialize()]);
-
-    // createSettingObjScript();
-    await createFirstAdminScript();
-    await createDefaultLeaveTypesScript();
+  // Do not report healthy or accept requests before storage and bootstrap are ready.
+  await Promise.all([MongoDatabase.initialize(), RedisDatabase.initialize()]);
+  await createFirstAdminScript();
+  await createDefaultLeaveTypesScript();
+  const server = app.listen(config.server.port, "0.0.0.0", () => {
     logger.info(`HRM backend listening on port ${config.server.port}`);
   });
 

@@ -3,6 +3,7 @@ build/
 .env
 .env.*
 !.env.example
+!.env.docker.example
 output/
 coverage/
 *.log
@@ -10,5 +11,6 @@ coverage/
 *.key
 *.tsbuildinfo
 logs/
+backups/
 tmp/
 .DS_Store

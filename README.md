@@ -71,3 +71,12 @@ Frontend: `/admin/terms`, `/admin/announcements`, `/admin/settings/password`; em
 Run `npm run test:workspace` with local MongoDB and Redis running. Tests use a unique temporary database and Redis key prefix, and clean up their own data afterward. Override connections with `HRM_TEST_MONGO_URI` and `HRM_TEST_REDIS_URL` if needed. Normal HRM data is not used.
 
 Attendance check-in/check-out requires `latitude` and `longitude`; optional `accuracyMeters`, `address`, and `officeLocationId` are accepted. The response records distance from the office and whether the point is within its configured geofence.
+
+## Docker deployment
+
+For a single-server frontend, backend, MongoDB, Redis, and HTTPS stack, see
+[deploy/README.md](deploy/README.md). Keep `HRM-frontend` alongside this repository.
+
+For push-to-main deployment to the existing AWS server, see
+[deploy/AWS-PIPELINE.md](deploy/AWS-PIPELINE.md). Pipeline files are prepared but
+not activated; server provisioning and GitHub secrets are still required.

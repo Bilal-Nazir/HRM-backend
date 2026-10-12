@@ -1,0 +1,14 @@
+node_modules
+.git
+.env
+.env.*
+build
+tmp
+logs
+output
+coverage
+backups
+*.log
+*.pem
+*.key
+.DS_Store

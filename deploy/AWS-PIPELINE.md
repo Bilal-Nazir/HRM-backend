@@ -1,0 +1,104 @@
+# GitHub → existing AWS server
+
+## Current status: prepared, not activated
+
+The workflows and server configuration are local files only. Docker installation
+on AWS was blocked by an existing unfinished kernel-package update. At the owner's
+request, that update was not repaired. No deployment account, Actions secrets,
+HRM containers, or Nginx virtual host has been configured, and these files have
+not been pushed. Do not expect deployment to succeed until the setup below is done.
+
+## One-time activation checklist
+
+1. Have the server administrator resolve the package dependency issue and install
+   Docker Engine plus Compose v2. Do not reboot the shared server without approval.
+2. Generate a dedicated Ed25519 deployment key, and obtain the server host public
+   key over the already trusted `ssh aws-dev` connection (do not blindly trust keyscan).
+3. Copy `compose.aws.yaml`, `Caddyfile`, `mongo-init.js`, `deploy-release.sh`,
+   `ssh-dispatch.sh`, `provision-aws.sh`, and the public deployment key named
+   `deploy-key.pub` into a new root-owned `/opt/hrm` directory. Review and run
+   `sudo bash /opt/hrm/provision-aws.sh`. This creates the dedicated account and
+   root-only random secrets; it does not alter existing databases.
+4. Set the four GitHub secrets listed below in **both** repositories. Never use
+   your personal SSH private key for the pipeline.
+5. Review `nginx.aws.conf`, install it as a separate Nginx site, run `nginx -t`,
+   and reload Nginx only if validation succeeds. Keep existing sites enabled.
+6. Commit/push the Docker files and workflow in each repository. Inspect both
+   Actions runs and verify container health, login, and persistence before use.
+
+Do not expose real employee data through the HTTP testing address.
+
+Each repository has `.github/workflows/deploy.yml`. A push to `main` builds its
+production image on a GitHub-hosted runner and streams the compressed image over
+SSH to AWS. Manual runs are also available in the Actions tab. There is no paid
+registry or on-server build step. GitHub/AWS account limits and charges still apply.
+
+## Server layout
+
+- `/opt/hrm/compose.aws.yaml`: independent `hrm` Compose project.
+- `/opt/hrm/.env`: root-only generated database/JWT/bootstrap secrets.
+- `/opt/hrm/images.env`: currently selected immutable Git SHA image tags.
+- `/opt/hrm/deploy-release.sh`: locked deployments, health checks, previous-image rollback.
+- `/opt/hrm/ssh-dispatch.sh`: restricted deployment-only SSH command.
+- `hrm-deploy`: dedicated account, no general shell via its Actions key, no port forwarding.
+- Host Nginx proxies the IP-only virtual host to `127.0.0.1:18080`.
+- Existing CustomerCore Nginx host, MongoDB, Redis, Node, and Java services are not replaced.
+
+Runtime memory caps total approximately 1.6 GiB. Monitor the shared server's RAM,
+swap, disk, and container restarts; caps are not a guarantee of adequate capacity.
+Database volumes are persistent but must be backed up separately.
+
+## GitHub configuration (both repositories)
+
+Encrypted Actions repository secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `DEPLOY_HOST` | AWS public IP |
+| `DEPLOY_USER` | `hrm-deploy` |
+| `DEPLOY_SSH_KEY` | Dedicated deployment private key, not your personal SSH key |
+| `DEPLOY_KNOWN_HOSTS` | Host key obtained over the existing trusted SSH connection |
+
+Deploys only run on `main` pushes or explicit manual dispatch, never pull requests.
+Anyone able to push deployment code to main effectively controls the deployed app;
+limit repository write access and use branch protection where appropriate.
+
+The first image waits until the other repository has deployed its first image.
+Later pushes update only changed containers. A failed health check attempts to
+restore previous image tags. This cannot undo data migrations. Updates can cause
+brief downtime; this is a single-server deployment, not zero-downtime infrastructure.
+
+## What updates automatically
+
+Application/Dockerfile changes deploy on push. The root-owned server deployment
+scripts, Compose configuration, and Nginx configuration do **not** automatically
+overwrite themselves on push. Changes to infrastructure files require an explicit
+reviewed server update through `ssh aws-dev`.
+
+## Operations
+
+```sh
+ssh aws-dev
+sudo docker compose --env-file /opt/hrm/.env --env-file /opt/hrm/images.env -f /opt/hrm/compose.aws.yaml ps
+sudo docker compose --env-file /opt/hrm/.env --env-file /opt/hrm/images.env -f /opt/hrm/compose.aws.yaml logs --tail=100 backend
+```
+
+Use the root-only `.env` to retrieve the initial admin password privately on your
+own terminal, then change it through the app. Never paste it in GitHub or chat.
+New deployment creates an empty HRM database; local development data is not migrated.
+
+Current requested address: `http://3.126.250.133/admin/login`. Plain HTTP is for
+testing only: credentials and tokens are not encrypted in transit, and browser
+geolocation will not work. Do not enter real employee data until HTTPS is enabled.
+For encrypted local testing, forward the private port through SSH and open localhost:
+
+```sh
+ssh -N -L 3001:127.0.0.1:18080 aws-dev
+# Open http://localhost:3001/admin/login
+```
+
+Never run `down -v` or global Docker pruning commands on the shared host.
+The deployment script removes only older `hrm-backend` / `hrm-frontend` tags,
+keeping current and immediately previous images. For database backups use the
+guide in `README.md`, with `/opt/hrm/.env`, `/opt/hrm/images.env`, and
+`/opt/hrm/compose.aws.yaml` as the Compose arguments above.
