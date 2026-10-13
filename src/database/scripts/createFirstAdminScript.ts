@@ -62,10 +62,6 @@ export const createFirstAdminScript = async () => {
   });
   if (admin) return;
 
-  const initialPassword = process.env.INITIAL_ADMIN_PASSWORD;
-  if (!initialPassword || initialPassword.length < 12)
-    throw new Error("Set INITIAL_ADMIN_PASSWORD to a unique password of at least 12 characters before first startup.");
-
   return AuthController.dbInsertRecord({
     data: {
       [constants.fields.User.organizationId]: organization.id,
