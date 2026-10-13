@@ -17,6 +17,11 @@ router.get(
   authMiddleware(["leave.read.self"]),
   asyncWrapper(LeaveController.viewLeaveTypesController),
 );
+router.get(
+  "/balances",
+  authMiddleware(["leave.read.self"]),
+  asyncWrapper(LeaveController.balancesController),
+);
 router.post(
   "/types",
   authMiddleware(["leave.manage"]),

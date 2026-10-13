@@ -99,7 +99,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
           objs.map(async (obj) => ({
             ...(await obj.display({ detail: true })),
             employee: names.get(obj.employeeId) || null,
-            leaveTypeName: typeNames.get(obj.leaveTypeId) || "Leave",
+            leaveTypeName: obj.requestKind === "work_from_home" ? "Work from Home" : typeNames.get(obj.leaveTypeId || "") || "Leave",
           })),
         ),
         totalCount,
@@ -246,11 +246,12 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
   ) => {
     const organizationId = req.auth!.organizationId!;
     const employeeId = req.auth!.employeeId!;
+    const requestKind = req.body.requestKind === "work_from_home" ? "work_from_home" : "leave";
     const { isValid, errorMessages, postData } = await this.validateData({
       data: req.body,
       validationRules: {
         leaveTypeId: [
-          { rule: "required" },
+          ...(requestKind === "leave" ? [{ rule: "required" as const }] : []),
           { rule: "format", type: "id" },
           {
             rule: "exists",
@@ -263,6 +264,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
             baseFilter: false,
           },
         ],
+        requestKind: [{ rule: "choices", options: ["leave", "work_from_home"] }],
         startDate: [{ rule: "required" }, { rule: "format", type: "datetime" }],
         endDate: [{ rule: "required" }, { rule: "format", type: "datetime" }],
         totalDays: [
@@ -311,6 +313,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
         organizationId,
         employeeId,
         leaveTypeId: postData.leaveTypeId,
+        requestKind,
         startDate,
         endDate,
         totalDays: dayCount(startDate, endDate),
@@ -333,6 +336,27 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
         [this._modelName]: await obj.display({ detail: true }),
       },
     });
+  };
+
+  public balancesController = async (req: AuthenticatedRequest, res: Response) => {
+    const organizationId = req.auth!.organizationId!;
+    const employeeId = req.auth!.employeeId!;
+    const year = Number(req.query.year) || new Date().getUTCFullYear();
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new ValidationException("Invalid year");
+    const start = new Date(Date.UTC(year, 0, 1));
+    const end = new Date(Date.UTC(year, 11, 31, 23, 59, 59));
+    const [types, requests] = await Promise.all([
+      LeaveTypeModel.find({ organizationId, status: "active", isDeleted: { $ne: true } }),
+      LeaveRequestModel.find({ organizationId, employeeId, requestKind: { $ne: "work_from_home" }, status: { $in: ["approved", "pending"] }, startDate: { $lte: end }, endDate: { $gte: start }, isDeleted: { $ne: true } }),
+    ]);
+    const leaveBalances = types.map((type) => {
+      const matching = requests.filter((request) => request.leaveTypeId === type.id);
+      const daysInYear = (request: LeaveRequestClass) => dayCount(new Date(Math.max(new Date(request.startDate).getTime(), start.getTime())), new Date(Math.min(new Date(request.endDate).getTime(), end.getTime())));
+      const usedDays = matching.filter((request) => request.status === "approved").reduce((sum, request) => sum + daysInYear(request), 0);
+      const pendingDays = matching.filter((request) => request.status === "pending").reduce((sum, request) => sum + daysInYear(request), 0);
+      return { leaveTypeId: type.id, name: type.name, allowanceDays: type.annualAllowanceDays || 0, usedDays, pendingDays, remainingDays: Math.max(0, (type.annualAllowanceDays || 0) - usedDays) };
+    });
+    return sendResponseObject({ res, data: { year, leaveBalances } });
   };
 
   public viewController = async (req: AuthenticatedRequest, res: Response) => {

@@ -308,6 +308,10 @@ test("workspace APIs, organization boundaries, password changes and attendance",
             .announcements[0].status,
           "archived",
         );
+        assert.equal((await request("/announcements/" + announcementId, employee, "DELETE")).status, 403);
+        assert.equal((await request("/announcements/" + announcementId, other, "DELETE")).status, 404);
+        assert.equal((await request("/announcements/" + announcementId, admin, "DELETE")).status, 200);
+        assert.equal((await request("/announcements/manage", admin)).body.data.totalCount, 0);
       },
     );
     await t.test(
@@ -343,6 +347,7 @@ test("workspace APIs, organization boundaries, password changes and attendance",
         );
         assert.equal(current.status, 200);
         assert.equal(current.body.data.summary.presentNow, 1);
+        assert.equal(current.body.data.attendances[0].checkInLocation.latitude, location.latitude);
         assert.equal(
           current.body.data.attendances[0].employee.employeeCode,
           "employee-test",
@@ -369,6 +374,19 @@ test("workspace APIs, organization boundaries, password changes and attendance",
           (await request("/attendance/history", employee)).body.data
             .attendances[0].checkOutAt,
         );
+        const summary = (await request("/attendance/summary", employee)).body.data;
+        assert.equal(summary.totalWorkingDays, 1);
+        assert.equal(summary.daily.length, 1);
+        assert.equal((await request("/attendance/summary?scope=organization", admin)).body.data.totalWorkingDays, 1);
+        assert.equal((await request("/attendance/schedule", admin)).body.data.schedule, null);
+        assert.equal((await request("/attendance/schedule", employee, "PATCH", { startTime: "09:00", endTime: "17:00", workingDays: [1, 2, 3, 4, 5] })).status, 403);
+        assert.equal((await request("/attendance/schedule", admin, "PATCH", { startTime: "09:00", endTime: "17:00", workingDays: [1, 2, 3, 4, 5] })).status, 200);
+        await Attendance.create({ organizationId: org.id, employeeId: employee.payload.employeeId, checkInLocation: { ...location, capturedAt: new Date("2026-10-08T10:00:00Z") }, checkOutLocation: { ...location, capturedAt: new Date("2026-10-08T16:00:00Z") }, checkInAt: new Date("2026-10-08T10:00:00Z"), checkOutAt: new Date("2026-10-08T16:00:00Z"), workDate: "2026-10-08", status: "completed" });
+        const flaggedSummary = (await request("/attendance/summary?from=2026-10-08&to=2026-10-08", employee)).body.data;
+        assert.equal(flaggedSummary.flags.lateCheckIns, 1);
+        assert.equal(flaggedSummary.flags.earlyCheckOuts, 1);
+        assert.equal(flaggedSummary.buckets.fiveToUnderEightHours, 1);
+        assert.equal((await request("/attendance/manage?flags=true", admin)).body.data.attendances.some((item) => item.flags.includes("late_check_in")), true);
         assert.equal(
           (await request("/attendance/manage?open=true", admin)).body.data
             .summary.presentNow,
@@ -519,8 +537,39 @@ test("workspace APIs, organization boundaries, password changes and attendance",
           (await request(url, admin, "PATCH", { status: "rejected" })).status,
           404,
         );
+        const balance = (await request("/leave/balances?year=2026", employee)).body.data.leaveBalances.find((item) => item.name === "Sick");
+        assert.equal(balance.allowanceDays, 12);
+        assert.equal(balance.usedDays, 2);
+        assert.equal(balance.remainingDays, 10);
+        const wfh = await request("/leave/requests", employee, "POST", { requestKind: "work_from_home", startDate: "2026-12-03", endDate: "2026-12-03", reason: "Remote work" });
+        assert.equal(wfh.status, 201, JSON.stringify(wfh.body));
+        assert.equal(wfh.body.data.leaveRequest.requestKind, "work_from_home");
+        assert.equal((await request("/leave/requests/manage?status=pending", admin)).body.data.leaveRequests[0].leaveTypeName, "Work from Home");
+        assert.equal((await request("/leave/balances?year=2026", employee)).body.data.leaveBalances.find((item) => item.name === "Sick").remainingDays, 10);
       },
     );
+    await t.test("employee edits and archive preserve historical records and disable login", async () => {
+      const target = await account("archive-test", org.id, ["employee.read.self"]);
+      assert.equal((await request(`/employee/${target.payload.employeeId}`, employee, "DELETE")).status, 403);
+      const updated = await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { firstName: "Updated", jobTitle: "Designer", phone: "1234567", personalEmail: "person@example.test" });
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+      assert.equal(updated.body.data.employee.firstName, "Updated");
+      assert.equal(updated.body.data.employee.phone, "1234567");
+      assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { firstName: " " })).status, 422);
+      assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { workEmail: "employee-test@example.test" })).status, 409);
+      const cleared = await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { jobTitle: "", phone: "", personalEmail: "" });
+      assert.equal(cleared.status, 200);
+      assert.equal(cleared.body.data.employee.jobTitle, undefined);
+      assert.equal(cleared.body.data.employee.phone, undefined);
+      assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { employmentStatus: "suspended" })).status, 200);
+      assert.equal((await User.findById(target.user.id)).isActive, false);
+      assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { employmentStatus: "active" })).status, 200);
+      assert.equal((await User.findById(target.user.id)).isActive, true);
+      assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "DELETE")).status, 200);
+      assert.equal((await Employee.findById(target.payload.employeeId)).isDeleted, true);
+      assert.equal((await User.findById(target.user.id)).isActive, false);
+      assert.equal((await request("/employee/view", admin)).body.data.employees.some((item) => item.id === target.payload.employeeId), false);
+    });
     await t.test(
       "password validation, hashing, old-session invalidation and new login for both roles",
       async () => {

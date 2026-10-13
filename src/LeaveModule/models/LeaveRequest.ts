@@ -6,7 +6,8 @@ const { getModelForClass } = TypeGoose;
 export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
   @prop({ required: true }) public organizationId!: string;
   @prop({ required: true }) public employeeId!: string;
-  @prop({ required: true }) public leaveTypeId!: string;
+  @prop() public leaveTypeId?: string;
+  @prop({ default: "leave", enum: ["leave", "work_from_home"] }) public requestKind!: string;
   @prop({ required: true }) public startDate!: Date;
   @prop({ required: true }) public endDate!: Date;
   @prop({ required: true, min: 0.5 }) public totalDays!: number;
@@ -42,6 +43,7 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
         [constants.fields.id]: this.id,
         [constants.fields.LeaveRequest.employeeId]: this.employeeId,
         [constants.fields.LeaveRequest.leaveTypeId]: this.leaveTypeId,
+        requestKind: this.requestKind || "leave",
         [constants.fields.LeaveRequest.startDate]: this.startDate,
         [constants.fields.LeaveRequest.endDate]: this.endDate,
         [constants.fields.LeaveRequest.totalDays]: this.totalDays,

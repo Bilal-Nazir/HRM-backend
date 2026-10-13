@@ -301,7 +301,8 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     });
 
     if (req.query.search) {
-      readFilter.$text = { $search: String(req.query.search) };
+      const search = String(req.query.search).trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (search) readFilter.$or = ["firstName", "lastName", "workEmail", "employeeCode", "jobTitle"].map((field) => ({ [field]: { $regex: search, $options: "i" } }));
     }
 
     const objs = await this.dbReadRecords({
@@ -404,6 +405,10 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
         [employeeFields.personalEmail]: [{ rule: "format", type: "email" }],
         [employeeFields.timezone]: [{ rule: "datatype", datatype: "String" }],
         [employeeFields.jobTitle]: [{ rule: "datatype", datatype: "String" }],
+        [employeeFields.firstName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
+        [employeeFields.lastName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
+        [employeeFields.workEmail]: [{ rule: "format", type: "email" }],
+        [employeeFields.employmentType]: [{ rule: "choices", options: ["full-time", "part-time", "contract", "intern"] }],
         [employeeFields.departmentId]: [{ rule: "format", type: "id" }],
         [employeeFields.teamId]: [{ rule: "format", type: "id" }],
         [employeeFields.managerEmployeeId]: [{ rule: "format", type: "id" }],
@@ -433,9 +438,27 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       employeeId,
     });
 
+    for (const field of [employeeFields.firstName, employeeFields.lastName, employeeFields.workEmail]) {
+      if (Object.prototype.hasOwnProperty.call(requestData, field) && !String(requestData[field] || "").trim()) {
+        return next(new ValidationException({ [field]: "This field is required" }));
+      }
+    }
+
+    // The shared validator omits empty optional values. An explicit blank from
+    // the edit form means the admin wants to clear that field, not leave it unchanged.
+    for (const field of [employeeFields.phone, employeeFields.personalEmail, employeeFields.jobTitle, employeeFields.timezone]) {
+      if (Object.prototype.hasOwnProperty.call(requestData, field) && !String(requestData[field] || "").trim()) postData[field] = undefined;
+    }
+
+    if (postData.workEmail) {
+      const duplicate = await EmployeeModel.exists({ organizationId, workEmail: String(postData.workEmail).toLowerCase(), _id: { $ne: employeeId }, isDeleted: { $ne: true } });
+      if (duplicate) return next(new ConflictException("Work email is already in use"));
+    }
+
     const existingObj = postData[
       this._modelName
     ] as DocumentType<EmployeeClass>;
+    const before = existingObj.toObject();
     delete postData.id;
     delete postData[this._modelName];
 
@@ -446,15 +469,10 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     });
 
     const accessDisabledStatuses = ["suspended", "terminated", "archived"];
-
-    if (obj?.userId && accessDisabledStatuses.includes(obj.employmentStatus)) {
-      await this.dbUpdateRecord({
-        Collection: UserModel,
-        readFilter: { _id: obj.userId },
-        data: { isActive: false },
-        baseFilter: false,
-      });
-      await revokeUserSessions(String(obj.userId));
+    if (obj?.userId && postData.employmentStatus) {
+      const shouldBeActive = !accessDisabledStatuses.includes(obj.employmentStatus);
+      await UserModel.updateOne({ _id: obj.userId, organizationId }, { $set: { isActive: shouldBeActive } });
+      if (!shouldBeActive) await revokeUserSessions(String(obj.userId));
     }
 
     await writeAudit({
@@ -465,7 +483,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
         : "employee.employment.updated",
       entityType: "Employee",
       entityId: obj!.id,
-      before: existingObj.toObject(),
+      before,
       after: obj!.toObject(),
     });
 
@@ -475,6 +493,24 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
         [this._modelName]: await obj!.display({ detail: true }),
       },
     });
+  };
+
+  public deleteController = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const organizationId = req.auth!.organizationId!;
+    if (!req.auth!.permissions.some((permission) => ["*", "employee.update.employment"].includes(permission))) return next(new ForbiddenException());
+    if (req.params.id === req.auth!.employeeId) return next(new ForbiddenException("You cannot archive your own employee account"));
+    const obj = await EmployeeModel.findOne({ _id: req.params.id, organizationId, isDeleted: { $ne: true } });
+    if (!obj) return next(new ObjectNotFoundException("Employee"));
+    const before = obj.toObject();
+    obj.isDeleted = true;
+    obj.employmentStatus = "archived";
+    await obj.save();
+    if (obj.userId) {
+      await UserModel.updateOne({ _id: obj.userId }, { $set: { isActive: false } });
+      await revokeUserSessions(String(obj.userId));
+    }
+    await writeAudit({ organizationId, actorUserId: req.auth!.userId, action: "employee.archived", entityType: "Employee", entityId: obj.id, before, after: obj.toObject() });
+    return sendResponseObject({ res, data: { employee: await obj.display({ detail: true }) } });
   };
 }
 

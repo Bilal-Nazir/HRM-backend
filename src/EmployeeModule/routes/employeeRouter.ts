@@ -33,3 +33,8 @@ employeeRouter.patch(
   authMiddleware(),
   asyncWrapper(EmployeeController.updateController),
 );
+employeeRouter.delete(
+  "/:id",
+  authMiddleware(["employee.update.employment"]),
+  asyncWrapper(EmployeeController.deleteController),
+);

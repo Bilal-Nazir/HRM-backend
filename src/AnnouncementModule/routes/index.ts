@@ -27,4 +27,9 @@ AnnouncementRouter.patch(
   authMiddleware(["organization.update"]),
   asyncWrapper(AnnouncementController.updateController),
 );
+AnnouncementRouter.delete(
+  "/:id",
+  authMiddleware(["organization.update"]),
+  asyncWrapper(AnnouncementController.deleteController),
+);
 export default AnnouncementRouter;

@@ -44,6 +44,7 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
     );
     const readFilter = {
       [fields.organizationId]: req.auth!.organizationId,
+      isDeleted: { $ne: true },
       ...(publishedOnly ? { [fields.status]: statuses.published } : {}),
     };
     const [objs, totalCount] = await Promise.all([
@@ -68,6 +69,14 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
         lastPage: Math.ceil(totalCount / limit),
       },
     });
+  };
+
+  public deleteController = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const obj = await AnnouncementModel.findOne({ _id: req.params.id, organizationId: req.auth!.organizationId, isDeleted: { $ne: true } });
+    if (!obj) return next(new ObjectNotFoundException("Announcement"));
+    obj.isDeleted = true;
+    await obj.save();
+    return sendResponseObject({ res, data: { id: obj.id, deleted: true } });
   };
 
   public viewController = (req: AuthenticatedRequest, res: Response) =>

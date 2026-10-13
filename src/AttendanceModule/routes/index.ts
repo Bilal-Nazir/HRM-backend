@@ -7,6 +7,21 @@ import { asyncWrapper } from "../../node-base/utils";
 import AttendanceController from "../controllers/AttendanceController";
 const router = Router();
 router.get(
+  "/schedule",
+  authMiddleware(["organization.read"]),
+  asyncWrapper(AttendanceController.getScheduleController),
+);
+router.patch(
+  "/schedule",
+  authMiddleware(["organization.update"]),
+  asyncWrapper(AttendanceController.updateScheduleController),
+);
+router.get(
+  "/summary",
+  authMiddleware(["attendance.read.self"]),
+  asyncWrapper(AttendanceController.summaryController),
+);
+router.get(
   "/manage",
   authMiddleware(["attendance.read.team", "employee.read.all"]),
   requireOrganization,
