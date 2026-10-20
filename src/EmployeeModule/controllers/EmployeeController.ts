@@ -143,6 +143,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
             field: ({ keyData, data }) => ({
               organizationId: data.organizationId,
               employeeCode: keyData,
+              isDeleted: false,
             }),
             baseFilter: false,
           },
@@ -166,6 +167,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
             field: ({ keyData, data }) => ({
               organizationId: data.organizationId,
               workEmail: String(keyData).toLowerCase(),
+              isDeleted: false,
             }),
             baseFilter: false,
           },
@@ -407,6 +409,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
         [employeeFields.jobTitle]: [{ rule: "datatype", datatype: "String" }],
         [employeeFields.firstName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
         [employeeFields.lastName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
+        [employeeFields.employeeCode]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
         [employeeFields.workEmail]: [{ rule: "format", type: "email" }],
         [employeeFields.employmentType]: [{ rule: "choices", options: ["full-time", "part-time", "contract", "intern"] }],
         [employeeFields.departmentId]: [{ rule: "format", type: "id" }],
@@ -438,7 +441,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       employeeId,
     });
 
-    for (const field of [employeeFields.firstName, employeeFields.lastName, employeeFields.workEmail]) {
+    for (const field of [employeeFields.employeeCode, employeeFields.firstName, employeeFields.lastName, employeeFields.workEmail]) {
       if (Object.prototype.hasOwnProperty.call(requestData, field) && !String(requestData[field] || "").trim()) {
         return next(new ValidationException({ [field]: "This field is required" }));
       }
@@ -455,6 +458,12 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       if (duplicate) return next(new ConflictException("Work email is already in use"));
     }
 
+    if (postData.employeeCode) {
+      postData.employeeCode = String(postData.employeeCode).trim();
+      const duplicate = await EmployeeModel.exists({ organizationId, employeeCode: postData.employeeCode, _id: { $ne: employeeId }, isDeleted: { $ne: true } });
+      if (duplicate) return next(new ConflictException("Employee ID is already in use"));
+    }
+
     const existingObj = postData[
       this._modelName
     ] as DocumentType<EmployeeClass>;
@@ -467,6 +476,13 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       obj: existingObj,
       filterObj: false,
     });
+
+    if (obj?.userId && postData.employeeCode) {
+      await UserModel.updateOne(
+        { _id: obj.userId, organizationId },
+        { $set: { loginId: postData.employeeCode.toLowerCase() } },
+      );
+    }
 
     const accessDisabledStatuses = ["suspended", "terminated", "archived"];
     if (obj?.userId && postData.employmentStatus) {
@@ -506,7 +522,10 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     obj.employmentStatus = "archived";
     await obj.save();
     if (obj.userId) {
-      await UserModel.updateOne({ _id: obj.userId }, { $set: { isActive: false } });
+      await UserModel.updateOne(
+        { _id: obj.userId },
+        { $set: { isActive: false, isDeleted: true } },
+      );
       await revokeUserSessions(String(obj.userId));
     }
     await writeAudit({ organizationId, actorUserId: req.auth!.userId, action: "employee.archived", entityType: "Employee", entityId: obj.id, before, after: obj.toObject() });

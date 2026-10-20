@@ -568,7 +568,32 @@ test("workspace APIs, organization boundaries, password changes and attendance",
       assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "DELETE")).status, 200);
       assert.equal((await Employee.findById(target.payload.employeeId)).isDeleted, true);
       assert.equal((await User.findById(target.user.id)).isActive, false);
+      assert.equal((await User.findById(target.user.id)).isDeleted, true);
       assert.equal((await request("/employee/view", admin)).body.data.employees.some((item) => item.id === target.payload.employeeId), false);
+
+      const replacement = await request("/employee/create", admin, "POST", {
+        firstName: "Replacement",
+        lastName: "Person",
+        employeeCode: "archive-test",
+        workEmail: "archive-test@example.test",
+        employmentType: "full-time",
+        password,
+      });
+      assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
+      assert.notEqual(replacement.body.data.employee.id, target.payload.employeeId);
+
+      const edited = await request(
+        `/employee/${replacement.body.data.employee.id}`,
+        admin,
+        "PATCH",
+        {
+          employeeCode: "archive-test-edited",
+          workEmail: "archive-test-edited@example.test",
+        },
+      );
+      assert.equal(edited.status, 200, JSON.stringify(edited.body));
+      assert.equal(edited.body.data.employee.employeeCode, "archive-test-edited");
+      assert.equal(edited.body.data.employee.workEmail, "archive-test-edited@example.test");
     });
     await t.test(
       "password validation, hashing, old-session invalidation and new login for both roles",

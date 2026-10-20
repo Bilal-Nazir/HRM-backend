@@ -10,7 +10,10 @@ import { constants } from "../../node-base/constants";
 
 const { getModelForClass } = TypeGoose;
 
-@index({ organizationId: 1, loginId: 1 }, { unique: true })
+@index(
+  { organizationId: 1, loginId: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } },
+)
 export class UserClass extends BaseModelClass<UserClass> {
   @prop({ ref: () => OrganizationClass })
   public organizationId?: Ref<OrganizationClass>;

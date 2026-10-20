@@ -3,8 +3,14 @@ import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
 const { getModelForClass } = TypeGoose;
 
-@index({ organizationId: 1, employeeCode: 1 }, { unique: true })
-@index({ organizationId: 1, workEmail: 1 }, { unique: true })
+@index(
+  { organizationId: 1, employeeCode: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } },
+)
+@index(
+  { organizationId: 1, workEmail: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } },
+)
 @index({
   organizationId: 1,
   firstName: "text",

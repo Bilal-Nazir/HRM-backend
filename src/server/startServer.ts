@@ -4,7 +4,10 @@ import config from "../common/config";
 import { Database as RedisDatabase } from "../node-base/baseClasses/Redis";
 import { Database as MongoDatabase } from "../node-base/baseClasses/Typegoose";
 import registerRoutes from "../routes";
-import { createFirstAdminScript } from "../database/scripts";
+import {
+  createFirstAdminScript,
+  syncUniqueIndexesScript,
+} from "../database/scripts";
 import { createDefaultLeaveTypesScript } from "../database/scripts/createDefaultLeaveTypesScript";
 import { logger, sendResponseObject } from "../node-base/utils";
 
@@ -35,6 +38,7 @@ const startServer = async () => {
 
   // Do not report healthy or accept requests before storage and bootstrap are ready.
   await Promise.all([MongoDatabase.initialize(), RedisDatabase.initialize()]);
+  await syncUniqueIndexesScript();
   await createFirstAdminScript();
   await createDefaultLeaveTypesScript();
   const server = app.listen(config.server.port, "0.0.0.0", () => {
