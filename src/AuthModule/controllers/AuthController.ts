@@ -38,11 +38,13 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
     const organizationSlug = String(req.body.organizationSlug || "")
       .trim()
       .toLowerCase();
+    const portal = String(req.body.portal || "").trim().toLowerCase();
     const validation = await dataValidator.validate(
       {
         loginId,
         password,
         organizationSlug,
+        portal,
       },
       {
         loginId: [
@@ -54,6 +56,10 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
           { rule: "datatype", datatype: "String" },
         ],
         organizationSlug: [{ rule: "format", type: "slug" }],
+        portal: [
+          { rule: "required" },
+          { rule: "choices", options: ["admin", "employee"] },
+        ],
       },
     );
 
@@ -120,12 +126,29 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
           ),
         ];
 
+    const isAdmin =
+      user.isPlatformAdmin ||
+      assignments.some(
+        (assignment: any) => assignment.roleId?.name === "Organization Admin",
+      );
+    const accountType: "admin" | "employee" = isAdmin ? "admin" : "employee";
+    if (portal !== accountType) {
+      return next(
+        new UnauthenticatedException(
+          portal === "admin"
+            ? "This account cannot sign in to the admin portal"
+            : "Administrator accounts must use the admin portal",
+        ),
+      );
+    }
+
     const payload = {
       userId: user.id,
       employeeId: employee?.id,
       organizationId:
         employee?.organizationId?.toString() || user.organizationId?.toString(),
       permissions,
+      accountType,
       credentialVersion: user.credentialVersion || 0,
     };
     const { accessToken, refreshToken } = await generateSessionTokens(payload);

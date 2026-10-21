@@ -125,6 +125,7 @@ export const refreshAccessToken = async (refreshToken: string) => {
     employeeId: payload.employeeId,
     organizationId: payload.organizationId,
     permissions: payload.permissions,
+    accountType: payload.accountType,
     credentialVersion: payload.credentialVersion || 0,
   };
 

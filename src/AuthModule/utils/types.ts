@@ -5,6 +5,7 @@ export interface AuthUser {
   employeeId?: string;
   organizationId?: string;
   permissions: string[];
+  accountType?: "admin" | "employee";
   credentialVersion?: number;
   sessionId?: string;
   tokenId?: string;

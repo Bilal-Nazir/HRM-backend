@@ -145,6 +145,28 @@ test("workspace APIs, organization boundaries, password changes and attendance",
     await t.test(
       "authentication and permissions reject employee writes and unscoped accounts",
       async () => {
+        assert.equal(
+          (
+            await request("/auth/login", null, "POST", {
+              loginId: employee.user.loginId,
+              password,
+              organizationSlug: "test-office",
+              portal: "admin",
+            })
+          ).status,
+          401,
+        );
+        assert.equal(
+          (
+            await request("/auth/login", null, "POST", {
+              loginId: admin.user.loginId,
+              password,
+              organizationSlug: "test-office",
+              portal: "employee",
+            })
+          ).status,
+          401,
+        );
         assert.equal((await request("/terms")).status, 401);
         assert.equal((await request("/announcements")).status, 401);
         assert.equal((await request("/terms", unscoped)).status, 403);
@@ -664,6 +686,7 @@ test("workspace APIs, organization boundaries, password changes and attendance",
                 loginId: session.user.loginId,
                 password,
                 organizationSlug: "test-office",
+                portal: session === admin ? "admin" : "employee",
               })
             ).status,
             401,
@@ -672,6 +695,7 @@ test("workspace APIs, organization boundaries, password changes and attendance",
             loginId: session.user.loginId,
             password: newPassword,
             organizationSlug: "test-office",
+            portal: session === admin ? "admin" : "employee",
           });
           assert.equal(login.status, 200);
           assert.equal(login.body.data.user.passwordHash, undefined);
