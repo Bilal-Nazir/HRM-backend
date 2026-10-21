@@ -10,6 +10,7 @@ import { AuthenticatedRequest } from "../../AuthModule/utils/types";
 import DepartmentModel from "../../OrganizationModule/models/Department";
 import OfficeLocationModel from "../../OrganizationModule/models/OfficeLocation";
 import TeamModel from "../../OrganizationModule/models/Team";
+import OrganizationModel from "../../OrganizationModule/models/Organization";
 import {
   ConflictException,
   ForbiddenException,
@@ -30,6 +31,33 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
   _modelName = constants.fields.Employee.Employee;
   _validationRules: validationRulesType = {};
   _updateValidationRules: validationRulesType = {};
+
+  private generateEmployeeCode = async (organizationId: string) => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const organization = await OrganizationModel.findOneAndUpdate(
+        { _id: organizationId, isDeleted: false },
+        { $inc: { employeeSequence: 1 } },
+        { new: true },
+      );
+
+      if (!organization) throw new ObjectNotFoundException("Organization");
+
+      const prefix = organization.slug.trim().toLowerCase();
+      const employeeCode = `${prefix}-${String(organization.employeeSequence).padStart(3, "0")}`;
+      const [employeeExists, loginExists] = await Promise.all([
+        EmployeeModel.exists({ organizationId, employeeCode, isDeleted: false }),
+        UserModel.exists({
+          organizationId,
+          loginId: employeeCode.toLowerCase(),
+          isDeleted: false,
+        }),
+      ]);
+
+      if (!employeeExists && !loginExists) return employeeCode;
+    }
+
+    throw new ConflictException("Could not generate a unique employee ID");
+  };
 
   private validateOrganizationReferences = async ({
     organizationId,
@@ -120,7 +148,13 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     next: NextFunction,
   ) => {
     const organizationId = req.auth!.organizationId!;
-    const postData = { ...req.body, organizationId };
+    const requestData = { ...req.body };
+    delete requestData.employeeCode;
+    const postData = {
+      ...requestData,
+      organizationId,
+      employeeCode: await this.generateEmployeeCode(organizationId),
+    };
 
     const {
       isValid,
@@ -409,7 +443,6 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
         [employeeFields.jobTitle]: [{ rule: "datatype", datatype: "String" }],
         [employeeFields.firstName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
         [employeeFields.lastName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
-        [employeeFields.employeeCode]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
         [employeeFields.workEmail]: [{ rule: "format", type: "email" }],
         [employeeFields.employmentType]: [{ rule: "choices", options: ["full-time", "part-time", "contract", "intern"] }],
         [employeeFields.departmentId]: [{ rule: "format", type: "id" }],
@@ -441,7 +474,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       employeeId,
     });
 
-    for (const field of [employeeFields.employeeCode, employeeFields.firstName, employeeFields.lastName, employeeFields.workEmail]) {
+    for (const field of [employeeFields.firstName, employeeFields.lastName, employeeFields.workEmail]) {
       if (Object.prototype.hasOwnProperty.call(requestData, field) && !String(requestData[field] || "").trim()) {
         return next(new ValidationException({ [field]: "This field is required" }));
       }
@@ -458,12 +491,6 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       if (duplicate) return next(new ConflictException("Work email is already in use"));
     }
 
-    if (postData.employeeCode) {
-      postData.employeeCode = String(postData.employeeCode).trim();
-      const duplicate = await EmployeeModel.exists({ organizationId, employeeCode: postData.employeeCode, _id: { $ne: employeeId }, isDeleted: { $ne: true } });
-      if (duplicate) return next(new ConflictException("Employee ID is already in use"));
-    }
-
     const existingObj = postData[
       this._modelName
     ] as DocumentType<EmployeeClass>;
@@ -476,13 +503,6 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       obj: existingObj,
       filterObj: false,
     });
-
-    if (obj?.userId && postData.employeeCode) {
-      await UserModel.updateOne(
-        { _id: obj.userId, organizationId },
-        { $set: { loginId: postData.employeeCode.toLowerCase() } },
-      );
-    }
 
     const accessDisabledStatuses = ["suspended", "terminated", "archived"];
     if (obj?.userId && postData.employmentStatus) {

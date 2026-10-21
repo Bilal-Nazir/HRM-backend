@@ -572,28 +572,17 @@ test("workspace APIs, organization boundaries, password changes and attendance",
       assert.equal((await request("/employee/view", admin)).body.data.employees.some((item) => item.id === target.payload.employeeId), false);
 
       const replacement = await request("/employee/create", admin, "POST", {
+        employeeCode: "CUSTOM-999",
         firstName: "Replacement",
         lastName: "Person",
-        employeeCode: "archive-test",
         workEmail: "archive-test@example.test",
         employmentType: "full-time",
         password,
       });
       assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
       assert.notEqual(replacement.body.data.employee.id, target.payload.employeeId);
-
-      const edited = await request(
-        `/employee/${replacement.body.data.employee.id}`,
-        admin,
-        "PATCH",
-        {
-          employeeCode: "archive-test-edited",
-          workEmail: "archive-test-edited@example.test",
-        },
-      );
-      assert.equal(edited.status, 200, JSON.stringify(edited.body));
-      assert.equal(edited.body.data.employee.employeeCode, "archive-test-edited");
-      assert.equal(edited.body.data.employee.workEmail, "archive-test-edited@example.test");
+      assert.match(replacement.body.data.employee.employeeCode, /^test-office-\d{3,}$/);
+      assert.notEqual(replacement.body.data.employee.employeeCode, "CUSTOM-999");
     });
     await t.test(
       "password validation, hashing, old-session invalidation and new login for both roles",
