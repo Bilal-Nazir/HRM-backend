@@ -11,7 +11,7 @@ employeeRouter.get(
 employeeRouter.patch(
   "/me",
   authMiddleware(["employee.update.self"]),
-  asyncWrapper(EmployeeController.updateController),
+  asyncWrapper(EmployeeController.selfUpdateController),
 );
 employeeRouter.post(
   "/create",

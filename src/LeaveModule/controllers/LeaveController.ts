@@ -51,6 +51,9 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       Math.max(1, Math.floor(Number(req.query.size) || 20)),
     );
     const status = req.query.status;
+    const employeeId = typeof req.query.employeeId === "string" && /^[a-f\d]{24}$/i.test(req.query.employeeId) ? req.query.employeeId : undefined;
+    const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : undefined;
+    const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : undefined;
     if (
       status &&
       !["pending", "approved", "rejected", "cancelled"].includes(String(status))
@@ -59,6 +62,9 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
     const readFilter = {
       organizationId,
       ...(status && { status }),
+      ...(employeeId && { employeeId }),
+      ...(from && { endDate: { $gte: new Date(`${from}T00:00:00.000Z`) } }),
+      ...(to && { startDate: { $lte: new Date(`${to}T23:59:59.999Z`) } }),
       isDeleted: { $ne: true },
     };
     const [objs, totalCount] = await Promise.all([

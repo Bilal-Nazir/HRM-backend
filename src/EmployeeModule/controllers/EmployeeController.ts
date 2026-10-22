@@ -405,6 +405,15 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     return this.readController(req, res, next);
   };
 
+  public selfUpdateController = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    req.params.id = req.auth!.employeeId!;
+    return this.updateController(req, res, next);
+  };
+
   public updateController = async (
     req: AuthenticatedRequest,
     res: Response,

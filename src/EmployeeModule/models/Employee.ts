@@ -79,6 +79,8 @@ export class EmployeeClass extends BaseModelClass<EmployeeClass> {
           this.primaryOfficeLocationId,
         [constants.fields.Employee.employmentStatus]: this.employmentStatus,
         [constants.fields.Employee.employmentType]: this.employmentType,
+        [constants.fields.Employee.joinDate]: this.joinDate,
+        [constants.fields.createdAt]: this.createdAt,
       };
     if (detail)
       data = {

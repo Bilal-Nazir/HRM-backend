@@ -49,6 +49,7 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
         [constants.fields.LeaveRequest.totalDays]: this.totalDays,
         [constants.fields.LeaveRequest.reason]: this.reason,
         [constants.fields.LeaveRequest.status]: this.status,
+        [constants.fields.createdAt]: this.createdAt,
       };
     if (detail)
       data = {

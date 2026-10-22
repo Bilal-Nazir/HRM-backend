@@ -147,9 +147,10 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
   public summaryController = async (req: AuthenticatedRequest, res: Response) => {
     const organizationId = req.auth!.organizationId!;
     const isAdmin = req.query.scope === "organization" && req.auth!.permissions.some((permission) => ["*", "attendance.read.team"].includes(permission));
+    const requestedEmployeeId = typeof req.query.employeeId === "string" && /^[a-f\d]{24}$/i.test(req.query.employeeId) ? req.query.employeeId : undefined;
     const from = typeof req.query.from === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.from) ? req.query.from : `${new Date().getUTCFullYear()}-01-01`;
     const to = typeof req.query.to === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.to) ? req.query.to : new Date().toISOString().slice(0, 10);
-    const records = await AttendanceModel.find({ organizationId, ...(!isAdmin && { employeeId: req.auth!.employeeId }), isDeleted: { $ne: true }, workDate: { $gte: from, $lte: to } }).sort({ workDate: -1 }).limit(5000);
+    const records = await AttendanceModel.find({ organizationId, ...(!isAdmin ? { employeeId: req.auth!.employeeId } : requestedEmployeeId ? { employeeId: requestedEmployeeId } : {}), isDeleted: { $ne: true }, workDate: { $gte: from, $lte: to } }).sort({ workDate: -1 }).limit(5000);
     const employeeSchedule = await this.scheduleLookup(organizationId, [...new Set(records.map((record) => record.employeeId))]);
     const buckets = { atLeastEightHours: 0, fiveToUnderEightHours: 0, underFiveHours: 0 };
     const flagCounts = { lateCheckIns: 0, earlyCheckOuts: 0, outsideOfficeArea: 0 };
@@ -167,7 +168,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       if (metrics.flags.includes("outside_office_area")) flagCounts.outsideOfficeArea++;
       return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, ...metrics };
     });
-    return sendResponseObject({ res, data: { totalWorkingDays: new Set(records.map((record) => `${record.employeeId}:${record.workDate}`)).size, totalWorkedHours: Math.round(totalWorkedHours * 100) / 100, buckets, flags: flagCounts, daily: daily.slice(0, 100) } });
+    return sendResponseObject({ res, data: { totalWorkingDays: new Set(records.map((record) => `${record.employeeId}:${record.workDate}`)).size, totalWorkedHours: Math.round(totalWorkedHours * 100) / 100, buckets, flags: flagCounts, daily: daily.slice(0, 2000) } });
   };
 
   private getLocationData = (data: Record<string, any>) => {
