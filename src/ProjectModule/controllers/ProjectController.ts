@@ -44,6 +44,14 @@ const notifyProject = async (req: AuthenticatedRequest, project: any, task: any,
   const managers = await projectManagerEmployeeIds(req.auth!.organizationId!, project.id,);
   await notifyEmployees({ organizationId: req.auth!.organizationId!, employeeIds: [...employeeIds, ...managers], actorUserId: req.auth!.userId, actorEmployeeId: req.auth!.employeeId, type, title, message, href: `/projects/${project.id}/board`, projectId: project.id, taskId: task?.id });
 };
+const timerActionFor = (status: any): "none" | "start" | "stop" => {
+  if (["none", "start", "stop"].includes(status?.timerAction)) return status.timerAction;
+  // Preserve the original behaviour for workflow columns created before
+  // timerAction existed. Saving the column makes the choice explicit.
+  if (status?.category === "in_progress") return "start";
+  if (status?.category === "done") return "stop";
+  return "none";
+};
 
 async function projectAccess(req: AuthenticatedRequest, projectId: string, write = false, adminOnly = false) {
   object(projectId, "project ID");
@@ -159,9 +167,9 @@ export const createProject = async (req: AuthenticatedRequest, res: Response) =>
   await Promise.all([
     ProjectMemberModel.create({ organizationId, projectId: project.id, employeeId: managerEmployeeId, role: "project_manager", addedBy: req.auth!.userId }),
     WorkflowStatusModel.insertMany([
-      { organizationId, projectId: project.id, name: "Backlog", order: 0, category: "todo", color: "#7c8b84", isDefault: true },
-      { organizationId, projectId: project.id, name: "In Progress", order: 1, category: "in_progress", color: "#3b8ff3" },
-      { organizationId, projectId: project.id, name: "Done", order: 2, category: "done", color: "#149b7b" },
+      { organizationId, projectId: project.id, name: "Backlog", order: 0, category: "todo", color: "#7c8b84", isDefault: true, timerAction: "none" },
+      { organizationId, projectId: project.id, name: "In Progress", order: 1, category: "in_progress", color: "#3b8ff3", timerAction: "start" },
+      { organizationId, projectId: project.id, name: "Done", order: 2, category: "done", color: "#149b7b", timerAction: "stop" },
     ]),
   ]);
   const statuses = await WorkflowStatusModel.find({ projectId: project.id }).sort({ order: 1 });
@@ -261,7 +269,8 @@ export const getWorkflow = async (req: AuthenticatedRequest, res: Response) => {
 export const createStatus = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req, param(req, "id"), true, true);
   const count = await WorkflowStatusModel.countDocuments({ organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
-  const status = await WorkflowStatusModel.create({ organizationId: req.auth!.organizationId, projectId: req.params.id, name: clean(req.body.name, "Column name", 60), order: count, category: req.body.category || "todo", color: /^#[0-9a-f]{6}$/i.test(req.body.color) ? req.body.color : "#7c8b84", isDefault: Boolean(req.body.isDefault), moveRoles: Array.isArray(req.body.moveRoles) ? req.body.moveRoles : ["project_manager", "member"] });
+  const timerAction = ["none", "start", "stop"].includes(req.body.timerAction) ? req.body.timerAction : "none";
+  const status = await WorkflowStatusModel.create({ organizationId: req.auth!.organizationId, projectId: req.params.id, name: clean(req.body.name, "Column name", 60), order: count, category: req.body.category || "todo", color: /^#[0-9a-f]{6}$/i.test(req.body.color) ? req.body.color : "#7c8b84", isDefault: Boolean(req.body.isDefault), moveRoles: Array.isArray(req.body.moveRoles) ? req.body.moveRoles : ["project_manager", "member"], timerAction });
   if (status.isDefault) await WorkflowStatusModel.updateMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, _id: { $ne: status._id } }, { isDefault: false });
   await activity(req, param(req, "id"), "workflow.column_created", undefined, { statusId: status.id, name: status.name });
   return sendResponseObject({ res, code: 201, data: { status: serialize(status) } });
@@ -272,6 +281,10 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response) => 
   const status = await WorkflowStatusModel.findOne({ _id: object(param(req, "statusId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
   if (!status) throw new ObjectNotFoundException("Workflow column");
   for (const field of ["name", "category", "color", "isArchived", "moveRoles"] as const) if (req.body[field] !== undefined) (status as any)[field] = field === "name" ? clean(req.body[field], "Column name", 60) : req.body[field];
+  if (req.body.timerAction !== undefined) {
+    if (!["none", "start", "stop"].includes(req.body.timerAction)) throw new ValidationException("Invalid timer behavior");
+    status.timerAction = req.body.timerAction;
+  }
   if (req.body.allowedTransitionIds !== undefined) { const ids = [...new Set((req.body.allowedTransitionIds as unknown[]).map((id) => object(id, "transition status ID")))]; const count = await WorkflowStatusModel.countDocuments({ organizationId: req.auth!.organizationId, projectId: req.params.id, _id: { $in: ids }, isDeleted: { $ne: true } }); if (count !== ids.length) throw new ValidationException("A transition points outside this workflow"); status.allowedTransitionIds = ids; }
   if (req.body.isDefault) { await WorkflowStatusModel.updateMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, _id: { $ne: status._id } }, { isDefault: false }); status.isDefault = true; }
   await status.save(); await activity(req, param(req, "id"), "workflow.column_updated", undefined, { statusId: status.id });
@@ -333,12 +346,13 @@ export const createTask = async (req: AuthenticatedRequest, res: Response) => {
   const assigneeEmployeeIds = await validAssignees(req, project.id, req.body.assigneeEmployeeIds);
   let workflowStatusId = req.body.workflowStatusId;
   if (!workflowStatusId) workflowStatusId = (await WorkflowStatusModel.findOne({ organizationId: req.auth!.organizationId, projectId: project.id, isDefault: true, isArchived: false, isDeleted: { $ne: true } }))?.id;
-  if (!workflowStatusId || !(await WorkflowStatusModel.exists({ _id: object(workflowStatusId), organizationId: req.auth!.organizationId, projectId: project.id, isArchived: false, isDeleted: { $ne: true } }))) throw new ValidationException("Project has no valid default workflow column");
+  const initialStatus = workflowStatusId ? await WorkflowStatusModel.findOne({ _id: object(workflowStatusId), organizationId: req.auth!.organizationId, projectId: project.id, isArchived: false, isDeleted: { $ne: true } }) : null;
+  if (!initialStatus) throw new ValidationException("Project has no valid default workflow column");
   const sequenced = await ProjectModel.findOneAndUpdate({ _id: project.id }, { $inc: { nextIssueNumber: 1 } }, { new: false });
   if (!sequenced) throw new ObjectNotFoundException("Project");
   const issueNumber = sequenced.nextIssueNumber;
   if (req.body.parentStoryId && !(await ProjectTaskModel.exists({ _id: object(req.body.parentStoryId), organizationId: req.auth!.organizationId, projectId: project.id, type: "story", isDeleted: { $ne: true } }))) throw new ValidationException("Parent story is not part of this project");
-  const task = await ProjectTaskModel.create({ organizationId: req.auth!.organizationId, projectId: project.id, issueNumber, key: `${project.key}-${issueNumber}`, type, title, description: String(req.body.description || "").trim(), parentStoryId: req.body.parentStoryId || undefined, assigneeEmployeeIds, reporterEmployeeId: req.auth!.employeeId, createdBy: req.auth!.userId, priority: req.body.priority || "medium", workflowStatusId, startDate: optionalDate(req.body.startDate), dueDate: optionalDate(req.body.dueDate), estimatedHours: req.body.estimatedHours === "" || req.body.estimatedHours === undefined ? undefined : Number(req.body.estimatedHours), labels: Array.isArray(req.body.labels) ? req.body.labels.map((label: unknown) => String(label).trim()).filter(Boolean).slice(0, 20) : [] });
+  const task = await ProjectTaskModel.create({ organizationId: req.auth!.organizationId, projectId: project.id, issueNumber, key: `${project.key}-${issueNumber}`, type, title, description: String(req.body.description || "").trim(), parentStoryId: req.body.parentStoryId || undefined, assigneeEmployeeIds, reporterEmployeeId: req.auth!.employeeId, createdBy: req.auth!.userId, priority: req.body.priority || "medium", workflowStatusId, ...(timerActionFor(initialStatus) === "start" ? { timeStartedAt: new Date() } : {}), startDate: optionalDate(req.body.startDate), dueDate: optionalDate(req.body.dueDate), estimatedHours: req.body.estimatedHours === "" || req.body.estimatedHours === undefined ? undefined : Number(req.body.estimatedHours), labels: Array.isArray(req.body.labels) ? req.body.labels.map((label: unknown) => String(label).trim()).filter(Boolean).slice(0, 20) : [] });
   await activity(req, project.id, `${type}.created`, task.id, { key: task.key, title });
   await notifyProject(req, project, task, `project.${type}_created`, `New ${type} in ${project.name}`, title, assigneeEmployeeIds);
   return sendResponseObject({ res, code: 201, data: { task: serialize(task) } });
@@ -377,15 +391,15 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   const before = task.workflowStatusId;
   const now = new Date();
 
-  // Every editable project member can move work freely. Time is accumulated in
-  // independent sessions: entering In Progress starts/resumes it, and leaving
-  // In Progress pauses it without losing any previously recorded duration.
-  if (current.category === "in_progress" && target.category !== "in_progress" && task.timeStartedAt) {
+  // Timer behaviour is configured per destination column. Neutral columns do
+  // not alter the timer, so it can continue across review/QA columns.
+  const timerAction = timerActionFor(target);
+  if (timerAction === "stop" && task.timeStartedAt) {
     task.accumulatedSeconds = (task.accumulatedSeconds || 0) + Math.max(0, Math.floor((now.getTime() - task.timeStartedAt.getTime()) / 1000));
     task.timeStoppedAt = now;
     task.timeStartedAt = undefined;
   }
-  if (current.category !== "in_progress" && target.category === "in_progress") {
+  if (timerAction === "start" && !task.timeStartedAt) {
     task.timeStartedAt = now;
     task.timeStoppedAt = undefined;
   }

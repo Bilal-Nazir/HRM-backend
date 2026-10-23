@@ -14,5 +14,6 @@ export class WorkflowStatusClass extends BaseModelClass<WorkflowStatusClass> {
   @prop({ default: false }) isArchived!: boolean;
   @prop({ type: () => [String], default: [] }) allowedTransitionIds!: string[];
   @prop({ type: () => [String], default: ["project_manager", "member"] }) moveRoles!: string[];
+  @prop({ enum: ["none", "start", "stop"] }) timerAction?: string;
 }
 export default getModelForClass(WorkflowStatusClass, baseModelOptions);
