@@ -16,7 +16,8 @@ export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop({ trim: true }) description?: string;
   @prop() parentStoryId?: string;
   @prop({ type: () => [String], default: [] }) assigneeEmployeeIds!: string[];
-  @prop({ required: true }) reporterEmployeeId!: string;
+  // Admin accounts are organization users and may not have an employee record.
+  @prop() reporterEmployeeId?: string;
   @prop({ required: true }) createdBy!: string;
   @prop({ enum: ["low", "medium", "high", "critical"], default: "medium" }) priority!: string;
   @prop({ required: true }) workflowStatusId!: string;

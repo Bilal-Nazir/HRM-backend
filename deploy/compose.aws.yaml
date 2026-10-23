@@ -50,6 +50,9 @@ services:
       DB_REDIS_PASS: ${REDIS_PASSWORD:?Required}
       JWT_SECRET: ${JWT_SECRET:?Required}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Required}
+      PROJECT_UPLOAD_DIR: /app/uploads/project-attachments
+    volumes:
+      - project_uploads:/app/uploads
     depends_on:
       mongo: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -105,3 +108,4 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  project_uploads:

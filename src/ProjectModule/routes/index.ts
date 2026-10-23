@@ -6,6 +6,7 @@ import * as controller from "../controllers/ProjectController";
 const router = Router();
 router.use(authMiddleware(), requireOrganization);
 router.get("/my-tasks", asyncWrapper(controller.myTasks));
+router.get("/dashboard", asyncWrapper(controller.dashboardSummary));
 router.get("/", asyncWrapper(controller.listProjects));
 router.post("/", asyncWrapper(controller.createProject));
 router.get("/:id", asyncWrapper(controller.getProject));

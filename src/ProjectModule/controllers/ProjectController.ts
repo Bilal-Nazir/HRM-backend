@@ -90,6 +90,64 @@ export const listProjects = async (req: AuthenticatedRequest, res: Response) => 
   return sendResponseObject({ res, data: { projects: projects.map((project: any) => { const row = taskMap.get(String(project._id)); const totalTasks = row?.total || 0; const completedTasks = row?.statusIds.filter((id: string) => doneMap.get(String(project._id))?.has(id)).length || 0; return { ...serialize(project), manager: managerMap.get(project.managerEmployeeId) || null, memberCount: memberMap.get(String(project._id)) || 0, totalTasks, completedTasks, progress: totalTasks ? Math.round(completedTasks / totalTasks * 100) : 0 }; }), totalCount, page, lastPage: Math.ceil(totalCount / size) } });
 };
 
+export const dashboardSummary = async (req: AuthenticatedRequest, res: Response) => {
+  const organizationId = req.auth!.organizationId!;
+  const membership = !isAdmin(req)
+    ? await ProjectMemberModel.find({ organizationId, employeeId: req.auth!.employeeId, status: "active", isDeleted: { $ne: true } }).distinct("projectId")
+    : null;
+  const projectFilter: any = {
+    organizationId,
+    isDeleted: { $ne: true },
+    ...(membership ? { _id: { $in: membership } } : {}),
+  };
+  const projects = await ProjectModel.find(projectFilter).sort({ updatedAt: -1 }).lean();
+  const projectIds = projects.map((project: any) => String(project._id));
+  const [tasks, workflow] = await Promise.all([
+    ProjectTaskModel.find({ organizationId, projectId: { $in: projectIds }, isDeleted: { $ne: true } }).select("projectId workflowStatusId dueDate priority assigneeEmployeeIds").lean(),
+    WorkflowStatusModel.find({ organizationId, projectId: { $in: projectIds }, isArchived: false, isDeleted: { $ne: true } }).select("projectId _id category").lean(),
+  ]);
+  const doneIds = new Set(workflow.filter((status: any) => status.category === "done").map((status: any) => String(status._id)));
+  const inProgressIds = new Set(workflow.filter((status: any) => status.category === "in_progress").map((status: any) => String(status._id)));
+  const now = new Date();
+  const completedTasks = tasks.filter((task: any) => doneIds.has(task.workflowStatusId)).length;
+  const inProgressTasks = tasks.filter((task: any) => inProgressIds.has(task.workflowStatusId)).length;
+  const overdueTasks = tasks.filter((task: any) => task.dueDate && new Date(task.dueDate) < now && !doneIds.has(task.workflowStatusId)).length;
+  const projectRows = projects.map((project: any) => {
+    const rows = tasks.filter((task: any) => task.projectId === String(project._id));
+    const completed = rows.filter((task: any) => doneIds.has(task.workflowStatusId)).length;
+    const overdue = rows.filter((task: any) => task.dueDate && new Date(task.dueDate) < now && !doneIds.has(task.workflowStatusId)).length;
+    return {
+      id: String(project._id),
+      name: project.name,
+      key: project.key,
+      status: project.status,
+      totalTasks: rows.length,
+      completedTasks: completed,
+      overdueTasks: overdue,
+      progress: rows.length ? Math.round((completed / rows.length) * 100) : 0,
+    };
+  });
+  const statusCounts = projects.reduce((counts: Record<string, number>, project: any) => {
+    counts[project.status] = (counts[project.status] || 0) + 1;
+    return counts;
+  }, {});
+  return sendResponseObject({
+    res,
+    data: {
+      totalProjects: projects.length,
+      activeProjects: projects.filter((project: any) => project.status === "active").length,
+      totalTasks: tasks.length,
+      completedTasks,
+      inProgressTasks,
+      overdueTasks,
+      completionRate: tasks.length ? Math.round((completedTasks / tasks.length) * 100) : 0,
+      unassignedTasks: tasks.filter((task: any) => !task.assigneeEmployeeIds?.length).length,
+      statusCounts,
+      projects: projectRows.slice(0, 6),
+    },
+  });
+};
+
 export const createProject = async (req: AuthenticatedRequest, res: Response) => {
   if (!isAdmin(req)) throw new ForbiddenException();
   const organizationId = req.auth!.organizationId!, name = clean(req.body.name, "Project name", 120), key = clean(req.body.key, "Project key", 10).toUpperCase();
@@ -266,7 +324,10 @@ export const listTasks = async (req: AuthenticatedRequest, res: Response) => {
 };
 
 export const createTask = async (req: AuthenticatedRequest, res: Response) => {
-  const { project, member } = await projectAccess(req, param(req, "id"), true);
+  // Every project participant, including viewers, may create tasks. Stories
+  // remain restricted below. Admins may create work without an employee row.
+  const { project, member } = await projectAccess(req, param(req, "id"));
+  if (project.status === "archived") throw new ConflictException("Archived projects are read-only until restored");
   const type = req.body.type === "story" ? "story" : "task", title = clean(req.body.title, type === "story" ? "Story title" : "Task title", 180);
   if (type === "story" && !isAdmin(req) && member?.role !== "project_manager") throw new ForbiddenException("Only the project manager can create stories");
   const assigneeEmployeeIds = await validAssignees(req, project.id, req.body.assigneeEmployeeIds);
@@ -341,11 +402,11 @@ export const addComment = async (req: AuthenticatedRequest, res: Response) => {
   if (!task) throw new ObjectNotFoundException("Task");
   const comment = await ProjectCommentModel.create({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: req.params.taskId, authorEmployeeId: req.auth!.employeeId, body: clean(req.body.body, "Comment", 5000) });
   await activity(req, param(req, "id"), "comment.added", param(req, "taskId"), { commentId: comment.id });
-  await notifyProject(req, project, task, "project.comment_added", `New comment on ${task.title}`, String(comment.body).slice(0, 180), [...task.assigneeEmployeeIds, task.reporterEmployeeId]);
+  await notifyProject(req, project, task, "project.comment_added", `New comment on ${task.title}`, String(comment.body).slice(0, 180), [...task.assigneeEmployeeIds, task.reporterEmployeeId].filter((id): id is string => Boolean(id)));
   return sendResponseObject({ res, code: 201, data: { comment: serialize(comment) } });
 };
 
-const attachmentDirectory = path.resolve(process.cwd(), "uploads", "project-attachments");
+const attachmentDirectory = path.resolve(process.env.PROJECT_UPLOAD_DIR || path.join(process.cwd(), "uploads", "project-attachments"));
 const allowedMimeTypes = new Set(["image/png","image/jpeg","image/webp","image/gif","application/pdf","text/plain","text/csv","application/zip","application/vnd.openxmlformats-officedocument.wordprocessingml.document","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
 export const addAttachment = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req,param(req,"id"),true);
