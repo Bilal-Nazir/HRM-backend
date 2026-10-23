@@ -8,7 +8,8 @@
     "dev": "tsc-watch --noClear -p ./tsconfig.json --onSuccess \"node --import=extensionless/register build/app.js\"",
     "build": "rimraf build && tsc -p .",
     "start": "node --import=extensionless/register build/app.js",
-    "test:workspace": "tsc -p . --outDir tmp/workspace-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/workspace.test.mjs"
+    "test:workspace": "tsc -p . --outDir tmp/workspace-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/workspace.test.mjs",
+    "test:projects": "tsc -p . --outDir tmp/project-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/project-management.test.mjs"
   },
   "dependencies": {
     "@typegoose/typegoose": "^12.11.0",

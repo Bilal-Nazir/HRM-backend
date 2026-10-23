@@ -15,6 +15,12 @@ import { BaseControllerClass } from "../../node-base/baseClasses";
 import { validationRulesType } from "../../node-base/validator";
 import { LeaveRequestClass } from "../models/LeaveRequest";
 import { constants } from "../../node-base/constants";
+import {
+  createNotifications,
+  notifyEmployees,
+  organizationAdminUserIds,
+  userRecipientsForEmployees,
+} from "../../NotificationModule/services/notificationService";
 
 const dayCount = (start: Date, end: Date) =>
   Math.floor(
@@ -335,6 +341,41 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       after: obj.toObject(),
     });
 
+    const requester = await EmployeeModel.findOne({
+      _id: employeeId,
+      organizationId,
+      isDeleted: { $ne: true },
+    })
+      .select("firstName lastName managerEmployeeId")
+      .lean();
+    const managerEmployeeIds = requester?.managerEmployeeId
+      ? [String(requester.managerEmployeeId)]
+      : [];
+    const managerRecipients = await userRecipientsForEmployees(
+      organizationId,
+      managerEmployeeIds,
+    );
+    const adminUserIds = await organizationAdminUserIds(organizationId);
+    const requesterName = requester
+      ? `${requester.firstName} ${requester.lastName}`.trim()
+      : "An employee";
+    const requestLabel =
+      requestKind === "work_from_home" ? "work-from-home" : "leave";
+    await createNotifications({
+      organizationId,
+      recipientUserIds: [
+        ...managerRecipients.keys(),
+        ...adminUserIds,
+      ],
+      recipientEmployees: managerRecipients,
+      actorUserId: req.auth!.userId,
+      actorEmployeeId: employeeId,
+      type: `${requestKind}.requested`,
+      title: `New ${requestLabel} request`,
+      message: `${requesterName} submitted a ${requestLabel} request for ${obj.totalDays} day${obj.totalDays === 1 ? "" : "s"}.`,
+      href: "/leave",
+    });
+
     return sendResponseObject({
       res,
       code: 201,
@@ -506,6 +547,21 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       entityType: "LeaveRequest",
       entityId: obj.id,
       after: updatedObj.toObject(),
+    });
+
+    const requestLabel =
+      obj.requestKind === "work_from_home" ? "Work-from-home" : "Leave";
+    await notifyEmployees({
+      organizationId: req.auth!.organizationId!,
+      employeeIds: [String(obj.employeeId)],
+      actorUserId: req.auth!.userId,
+      actorEmployeeId: req.auth!.employeeId,
+      type: `${obj.requestKind}.${req.body.status}`,
+      title: `${requestLabel} request ${req.body.status}`,
+      message: `Your ${requestLabel.toLowerCase()} request has been ${req.body.status}.${
+        req.body.comment ? ` ${req.body.comment}` : ""
+      }`,
+      href: "/leave",
     });
 
     return sendResponseObject({
