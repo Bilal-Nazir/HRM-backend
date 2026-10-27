@@ -27,8 +27,9 @@ the live health endpoint after pushing either repository.
 
 Use the HTTPS address for login and browser location check-in.
 
-Each repository has `.github/workflows/deploy.yml`. A push to `main` builds its
-production image on a GitHub-hosted runner and streams the compressed image over
+The backend repository deploys from its protected `prod` branch. A push to `prod`
+first validates the TypeScript production build, then builds its production image
+on a GitHub-hosted runner and streams the compressed image over
 SSH to AWS. Manual runs are also available in the Actions tab. There is no paid
 registry or on-server build step. GitHub/AWS account limits and charges still apply.
 
@@ -60,9 +61,19 @@ Encrypted Actions repository secrets:
 | `DEPLOY_SSH_KEY` | Dedicated deployment private key, not your personal SSH key |
 | `DEPLOY_KNOWN_HOSTS` | Host key obtained over the existing trusted SSH connection |
 
-Deploys only run on `main` pushes or explicit manual dispatch, never pull requests.
-Anyone able to push deployment code to main effectively controls the deployed app;
+Backend deploys only run on `prod` pushes or explicit manual dispatch, never pull requests.
+Anyone able to push deployment code to prod effectively controls the deployed app;
 limit repository write access and use branch protection where appropriate.
+
+Production uses the separate Mongo database `hrm-prod`; local development remains
+on `hrm`. On an existing server whose Mongo volume predates this change, grant the
+application user access once before the first `prod` deployment:
+
+```sh
+ssh aws-dev
+sudo docker compose --env-file /opt/hrm/.env --env-file /opt/hrm/images.env -f /opt/hrm/compose.aws.yaml exec mongo sh -lc \
+  'mongosh --quiet --username root --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\''db.getSiblingDB("hrm").grantRolesToUser("hrm", [{role:"readWrite", db:"hrm-prod"}])'\'''
+```
 
 The first image waits until the other repository has deployed its first image.
 After initial startup, backend pushes recreate only the backend container and
@@ -96,7 +107,7 @@ New deployment creates an empty HRM database; local development data is not migr
 
 The local `aws-dev` SSH alias forwards `127.0.0.1:27019` on the workstation to
 `127.0.0.1:27019` on the server. Keep `ssh aws-dev` open while using Compass.
-Connect with `mongodb://hrm:<password>@127.0.0.1:27019/hrm?authSource=hrm&directConnection=true`.
+Connect with `mongodb://hrm:<password>@127.0.0.1:27019/hrm-prod?authSource=hrm&directConnection=true`.
 Retrieve the app password privately from `MONGO_APP_PASSWORD` in `/opt/hrm/.env`.
 The SSH alias's existing port 27018 continues to forward the separate host MongoDB.
 
