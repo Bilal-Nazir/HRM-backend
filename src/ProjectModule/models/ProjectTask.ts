@@ -6,6 +6,8 @@ const { getModelForClass } = TypeGoose;
 @index({ organizationId: 1, projectId: 1, workflowStatusId: 1, updatedAt: -1 })
 @index({ organizationId: 1, assigneeEmployeeIds: 1, updatedAt: -1 })
 @index({ organizationId: 1, projectId: 1, title: "text", key: "text", labels: "text" })
+@index({ reminder24hSentAt: 1, startDate: 1 })
+@index({ reminder24hSentAt: 1, dueDate: 1 })
 export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop({ required: true }) organizationId!: string;
   @prop({ required: true }) projectId!: string;
@@ -23,6 +25,7 @@ export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop({ required: true }) workflowStatusId!: string;
   @prop() startDate?: Date;
   @prop() dueDate?: Date;
+  @prop() reminder24hSentAt?: Date;
   @prop({ min: 0 }) estimatedHours?: number;
   @prop({ type: () => [String], default: [] }) labels!: string[];
   @prop() timeStartedAt?: Date;

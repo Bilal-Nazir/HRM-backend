@@ -10,6 +10,7 @@ import ProjectTaskModel from "../models/ProjectTask";
 import ProjectCommentModel from "../models/ProjectComment";
 import ProjectActivityModel from "../models/ProjectActivity";
 import ProjectAttachmentModel from "../models/ProjectAttachment";
+import ProjectReminderModel from "../models/ProjectReminder";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -52,6 +53,12 @@ const timerActionFor = (status: any): "none" | "start" | "stop" => {
   if (status?.category === "done") return "stop";
   return "none";
 };
+
+async function visibleTask(req: AuthenticatedRequest, projectId: string, taskId: string) {
+  const task = await ProjectTaskModel.findOne({ _id: object(taskId, "task ID"), organizationId: req.auth!.organizationId, projectId, isDeleted: { $ne: true } });
+  if (!task) throw new ObjectNotFoundException("Task");
+  return task;
+}
 
 async function projectAccess(req: AuthenticatedRequest, projectId: string, write = false, adminOnly = false) {
   object(projectId, "project ID");
@@ -348,6 +355,7 @@ export const createTask = async (req: AuthenticatedRequest, res: Response) => {
   if (!workflowStatusId) workflowStatusId = (await WorkflowStatusModel.findOne({ organizationId: req.auth!.organizationId, projectId: project.id, isDefault: true, isArchived: false, isDeleted: { $ne: true } }))?.id;
   const initialStatus = workflowStatusId ? await WorkflowStatusModel.findOne({ _id: object(workflowStatusId), organizationId: req.auth!.organizationId, projectId: project.id, isArchived: false, isDeleted: { $ne: true } }) : null;
   if (!initialStatus) throw new ValidationException("Project has no valid default workflow column");
+  if (!["todo", "in_progress"].includes(initialStatus.category)) throw new ValidationException("New tasks can only start in Backlog or In Progress");
   const sequenced = await ProjectModel.findOneAndUpdate({ _id: project.id }, { $inc: { nextIssueNumber: 1 } }, { new: false });
   if (!sequenced) throw new ObjectNotFoundException("Project");
   const issueNumber = sequenced.nextIssueNumber;
@@ -360,20 +368,21 @@ export const createTask = async (req: AuthenticatedRequest, res: Response) => {
 
 export const getTask = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req, param(req, "id"));
-  const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
-  if (!task) throw new ObjectNotFoundException("Task");
+  const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
   const [comments, history, attachments] = await Promise.all([ProjectCommentModel.find({ organizationId: req.auth!.organizationId, taskId: task.id, isDeleted: { $ne: true } }).sort({ createdAt: 1 }).lean(), ProjectActivityModel.find({ organizationId: req.auth!.organizationId, taskId: task.id, isDeleted: { $ne: true } }).sort({ createdAt: -1 }).limit(100).lean(), ProjectAttachmentModel.find({ organizationId:req.auth!.organizationId,taskId:task.id,isDeleted:{$ne:true} }).sort({createdAt:1}).lean()]);
-  return sendResponseObject({ res, data: { task: serialize(task), comments: comments.map(serialize), activity: history.map(serialize), attachments:attachments.map((item:any)=>{const value=serialize(item);delete value.storedName;return value}) } });
+  const commentPeople = await EmployeeModel.find({ organizationId: req.auth!.organizationId, _id: { $in: comments.flatMap((item: any) => [item.authorEmployeeId, ...(item.mentionedEmployeeIds || [])]).filter(Boolean) } }).select("firstName lastName employeeCode").lean();
+  const commentPeopleMap = new Map(commentPeople.map((person: any) => [String(person._id), { id: String(person._id), name: `${person.firstName} ${person.lastName}`.trim(), employeeCode: person.employeeCode }]));
+  return sendResponseObject({ res, data: { task: serialize(task), comments: comments.map((item: any) => ({ ...serialize(item), author: item.authorEmployeeId ? commentPeopleMap.get(String(item.authorEmployeeId)) : null, mentions: (item.mentionedEmployeeIds || []).map((id: string) => commentPeopleMap.get(String(id))).filter(Boolean) })), activity: history.map(serialize), attachments:attachments.map((item:any)=>{const value=serialize(item);delete value.storedName;return value}) } });
 };
 
 export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
-  const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
-  if (!task) throw new ObjectNotFoundException("Task");
+  const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
   const before: any = {}, changes: any = {};
   for (const field of ["title", "description", "priority", "parentStoryId", "startDate", "dueDate", "estimatedHours", "labels"] as const) if (req.body[field] !== undefined) { before[field] = (task as any)[field]; changes[field] = ["startDate", "dueDate"].includes(field) ? optionalDate(req.body[field]) : req.body[field]; }
   if (changes.title !== undefined) changes.title = clean(changes.title, "Title", 180);
   if (req.body.assigneeEmployeeIds !== undefined) { before.assigneeEmployeeIds = task.assigneeEmployeeIds; changes.assigneeEmployeeIds = await validAssignees(req, param(req, "id"), req.body.assigneeEmployeeIds); }
+  if (changes.startDate !== undefined || changes.dueDate !== undefined) task.reminder24hSentAt = undefined;
   Object.assign(task, changes); await task.save(); await activity(req, param(req, "id"), "task.updated", task.id, { before, after: changes });
   const newlyAssigned = Array.isArray(changes.assigneeEmployeeIds) ? changes.assigneeEmployeeIds.filter((id: string) => !(before.assigneeEmployeeIds || []).includes(id)) : [];
   if (newlyAssigned.length) await notifyProject(req, project, task, "project.task_assigned", `Task assigned in ${project.name}`, task.title, newlyAssigned);
@@ -382,8 +391,7 @@ export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
 
 export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
-  const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
-  if (!task) throw new ObjectNotFoundException("Task");
+  const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
   const targetId = object(req.body.workflowStatusId, "workflow status ID");
   if (task.workflowStatusId === targetId) return sendResponseObject({ res, data: { task: serialize(task) } });
   const [current, target] = await Promise.all([WorkflowStatusModel.findOne({ _id: task.workflowStatusId, organizationId: req.auth!.organizationId, projectId: req.params.id }), WorkflowStatusModel.findOne({ _id: targetId, organizationId: req.auth!.organizationId, projectId: req.params.id, isArchived: false, isDeleted: { $ne: true } })]);
@@ -410,13 +418,40 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   return sendResponseObject({ res, data: { task: serialize(task) } });
 };
 
+export const updateTaskTimer = async (req: AuthenticatedRequest, res: Response) => {
+  await projectAccess(req, param(req, "id"), true);
+  const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
+  const action = String(req.body.action || "");
+  if (!["start", "pause"].includes(action)) throw new ValidationException("Timer action must be start or pause");
+  const now = new Date();
+  if (action === "pause" && task.timeStartedAt) {
+    task.accumulatedSeconds = (task.accumulatedSeconds || 0) + Math.max(0, Math.floor((now.getTime() - task.timeStartedAt.getTime()) / 1000));
+    task.timeStoppedAt = now;
+    task.timeStartedAt = undefined;
+  } else if (action === "start" && !task.timeStartedAt) {
+    task.timeStartedAt = now;
+    task.timeStoppedAt = undefined;
+  }
+  await task.save();
+  await activity(req, param(req, "id"), action === "start" ? "task.timer_started" : "task.timer_paused", task.id);
+  return sendResponseObject({ res, data: { task: serialize(task) } });
+};
+
 export const addComment = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
-  const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
-  if (!task) throw new ObjectNotFoundException("Task");
-  const comment = await ProjectCommentModel.create({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: req.params.taskId, authorEmployeeId: req.auth!.employeeId, body: clean(req.body.body, "Comment", 5000) });
+  const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
+  const mentionedEmployeeIds: string[] = [...new Set<string>((Array.isArray(req.body.mentionedEmployeeIds) ? req.body.mentionedEmployeeIds : []).map((id: unknown) => object(id, "mentioned employee ID")))];
+  if (mentionedEmployeeIds.length) {
+    const validMentionCount = await ProjectMemberModel.countDocuments({ organizationId: req.auth!.organizationId, projectId: req.params.id, employeeId: { $in: mentionedEmployeeIds }, status: "active", isDeleted: { $ne: true } });
+    if (validMentionCount !== mentionedEmployeeIds.length) throw new ValidationException("Every mentioned person must be an active project member");
+  }
+  const comment = await ProjectCommentModel.create({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: req.params.taskId, authorEmployeeId: req.auth!.employeeId, mentionedEmployeeIds, body: clean(req.body.body, "Comment", 5000) });
   await activity(req, param(req, "id"), "comment.added", param(req, "taskId"), { commentId: comment.id });
   await notifyProject(req, project, task, "project.comment_added", `New comment on ${task.title}`, String(comment.body).slice(0, 180), [...task.assigneeEmployeeIds, task.reporterEmployeeId].filter((id): id is string => Boolean(id)));
+  if (mentionedEmployeeIds.length) {
+    const author = req.auth!.employeeId ? await EmployeeModel.findOne({ _id: req.auth!.employeeId, organizationId: req.auth!.organizationId }).select("firstName lastName").lean() : null;
+    await notifyEmployees({ organizationId: req.auth!.organizationId!, employeeIds: mentionedEmployeeIds, actorUserId: req.auth!.userId, actorEmployeeId: req.auth!.employeeId, type: "project.comment_mentioned", title: `${author ? `${author.firstName} ${author.lastName}` : "A teammate"} mentioned you`, message: `${task.key}: ${String(comment.body).slice(0, 180)}`, href: `/projects/${project.id}/board`, projectId: project.id, taskId: task.id });
+  }
   return sendResponseObject({ res, code: 201, data: { comment: serialize(comment) } });
 };
 
@@ -425,7 +460,7 @@ const allowedMimeTypes = new Set(["image/png","image/jpeg","image/webp","image/g
 export const addAttachment = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req,param(req,"id"),true);
   const taskId=object(param(req,"taskId"),"task ID");
-  if(!(await ProjectTaskModel.exists({_id:taskId,organizationId:req.auth!.organizationId,projectId:param(req,"id"),isDeleted:{$ne:true}})))throw new ObjectNotFoundException("Task");
+  await visibleTask(req,param(req,"id"),taskId);
   const originalName=clean(req.body.name,"File name",180),mimeType=String(req.body.mimeType||"");
   if(!allowedMimeTypes.has(mimeType))throw new ValidationException("This file type is not allowed");
   const match=String(req.body.data||"").match(/^data:[^;]+;base64,(.+)$/);
@@ -444,15 +479,33 @@ export const downloadAttachment = async (req:AuthenticatedRequest,res:Response) 
   await projectAccess(req,param(req,"id"));
   const attachment=await ProjectAttachmentModel.findOne({_id:object(param(req,"attachmentId"),"attachment ID"),organizationId:req.auth!.organizationId,projectId:param(req,"id"),isDeleted:{$ne:true}});
   if(!attachment)throw new ObjectNotFoundException("Attachment");
+  await visibleTask(req,param(req,"id"),attachment.taskId);
   const bytes=await readFile(path.join(attachmentDirectory,attachment.storedName)).catch(()=>null);
   if(!bytes)throw new ObjectNotFoundException("Attachment file");
-  res.setHeader("Content-Type",attachment.mimeType);res.setHeader("Content-Disposition",`attachment; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`);res.send(bytes);
+  res.setHeader("Content-Type",attachment.mimeType);res.setHeader("Content-Disposition",`${attachment.mimeType.startsWith("image/") || attachment.mimeType === "application/pdf" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.originalName)}`);res.send(bytes);
 };
 
 export const listActivity = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req, param(req, "id"));
   const rows = await ProjectActivityModel.find({ organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } }).sort({ createdAt: -1 }).limit(Math.min(200, Number(req.query.size) || 100)).lean();
   return sendResponseObject({ res, data: { activity: rows.map(serialize) } });
+};
+
+export const listReminders = async (req: AuthenticatedRequest, res: Response) => {
+  await projectAccess(req, param(req, "id"));
+  const rows = await ProjectReminderModel.find({ organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } }).sort({ scheduledAt: 1 }).limit(500).lean();
+  return sendResponseObject({ res, data: { reminders: rows.map(serialize) } });
+};
+
+export const createReminder = async (req: AuthenticatedRequest, res: Response) => {
+  const { project } = await projectAccess(req, param(req, "id"), true);
+  const scheduledAt = optionalDate(req.body.scheduledAt);
+  if (!scheduledAt) throw new ValidationException("Reminder date and time are required");
+  const reminder = await ProjectReminderModel.create({ organizationId: req.auth!.organizationId, projectId: project.id, title: clean(req.body.title, "Reminder title", 180), note: String(req.body.note || "").trim().slice(0, 2000), scheduledAt, createdBy: req.auth!.userId, createdByEmployeeId: req.auth!.employeeId });
+  await activity(req, project.id, "reminder.created", undefined, { reminderId: reminder.id, title: reminder.title, scheduledAt });
+  const memberIds = (await ProjectMemberModel.find({ organizationId: req.auth!.organizationId, projectId: project.id, status: "active", isDeleted: { $ne: true } }).distinct("employeeId")).map(String);
+  await notifyEmployees({ organizationId: req.auth!.organizationId!, employeeIds: memberIds, actorUserId: req.auth!.userId, actorEmployeeId: req.auth!.employeeId, type: "project.reminder_created", title: `Reminder in ${project.name}`, message: `${reminder.title} · ${scheduledAt.toLocaleString()}`, href: `/projects/${project.id}?view=calendar`, projectId: project.id });
+  return sendResponseObject({ res, code: 201, data: { reminder: serialize(reminder) } });
 };
 
 export const myTasks = async (req: AuthenticatedRequest, res: Response) => {
