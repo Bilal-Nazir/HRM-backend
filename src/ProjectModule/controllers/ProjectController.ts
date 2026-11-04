@@ -11,7 +11,7 @@ import ProjectCommentModel from "../models/ProjectComment";
 import ProjectActivityModel from "../models/ProjectActivity";
 import ProjectAttachmentModel from "../models/ProjectAttachment";
 import ProjectReminderModel from "../models/ProjectReminder";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { notifyEmployees, projectManagerEmployeeIds } from "../../NotificationModule/services/notificationService";
@@ -343,6 +343,14 @@ export const listTasks = async (req: AuthenticatedRequest, res: Response) => {
   return sendResponseObject({ res, data: { tasks: tasks.map((task: any) => ({ ...serialize(task), assignees: task.assigneeEmployeeIds.map((id: string) => peopleMap.get(id)).filter(Boolean) })), totalCount, page, lastPage: Math.ceil(totalCount / size) } });
 };
 
+export const listDeletedTasks = async (req: AuthenticatedRequest, res: Response) => {
+  await projectAccess(req, param(req, "id"));
+  const tasks = await ProjectTaskModel.find({ organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true }).sort({ updatedAt: -1 }).limit(200).lean();
+  const people = await EmployeeModel.find({ organizationId: req.auth!.organizationId, _id: { $in: tasks.flatMap((task: any) => task.assigneeEmployeeIds) } }).select("firstName lastName employeeCode jobTitle").lean();
+  const peopleMap = new Map(people.map((person: any) => [String(person._id), { id: String(person._id), name: `${person.firstName} ${person.lastName}`, employeeCode: person.employeeCode, jobTitle: person.jobTitle }]));
+  return sendResponseObject({ res, data: { tasks: tasks.map((task: any) => ({ ...serialize(task), assignees: task.assigneeEmployeeIds.map((id: string) => peopleMap.get(id)).filter(Boolean) })) } });
+};
+
 export const createTask = async (req: AuthenticatedRequest, res: Response) => {
   // Every project participant, including viewers, may create tasks. Stories
   // remain restricted below. Admins may create work without an employee row.
@@ -382,11 +390,46 @@ export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
   for (const field of ["title", "description", "priority", "parentStoryId", "startDate", "dueDate", "estimatedHours", "labels"] as const) if (req.body[field] !== undefined) { before[field] = (task as any)[field]; changes[field] = ["startDate", "dueDate"].includes(field) ? optionalDate(req.body[field]) : req.body[field]; }
   if (changes.title !== undefined) changes.title = clean(changes.title, "Title", 180);
   if (req.body.assigneeEmployeeIds !== undefined) { before.assigneeEmployeeIds = task.assigneeEmployeeIds; changes.assigneeEmployeeIds = await validAssignees(req, param(req, "id"), req.body.assigneeEmployeeIds); }
-  if (changes.startDate !== undefined || changes.dueDate !== undefined) task.reminder24hSentAt = undefined;
+  if (changes.dueDate !== undefined) task.reminder24hSentAt = undefined;
   Object.assign(task, changes); await task.save(); await activity(req, param(req, "id"), "task.updated", task.id, { before, after: changes });
   const newlyAssigned = Array.isArray(changes.assigneeEmployeeIds) ? changes.assigneeEmployeeIds.filter((id: string) => !(before.assigneeEmployeeIds || []).includes(id)) : [];
   if (newlyAssigned.length) await notifyProject(req, project, task, "project.task_assigned", `Task assigned in ${project.name}`, task.title, newlyAssigned);
   return sendResponseObject({ res, data: { task: serialize(task) } });
+};
+
+export const deleteTask = async (req: AuthenticatedRequest, res: Response) => {
+  const { project } = await projectAccess(req, param(req, "id"), true);
+  const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
+  task.isDeleted = true;
+  await task.save();
+  await activity(req, project.id, "task.deleted", task.id, { key: task.key, title: task.title });
+  return sendResponseObject({ res, data: { id: task.id } });
+};
+
+export const restoreTask = async (req: AuthenticatedRequest, res: Response) => {
+  await projectAccess(req, param(req, "id"), true);
+  const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId"), "task ID"), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true });
+  if (!task) throw new ObjectNotFoundException("Deleted task");
+  task.isDeleted = false;
+  await task.save();
+  await activity(req, param(req, "id"), "task.restored", task.id, { key: task.key, title: task.title });
+  return sendResponseObject({ res, data: { task: serialize(task) } });
+};
+
+export const permanentlyDeleteTask = async (req: AuthenticatedRequest, res: Response) => {
+  const { member } = await projectAccess(req, param(req, "id"), true);
+  if (!isAdmin(req) && member?.role !== "project_manager") throw new ForbiddenException("Only a project manager can permanently delete tasks");
+  const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId"), "task ID"), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true });
+  if (!task) throw new ObjectNotFoundException("Deleted task");
+  const attachments = await ProjectAttachmentModel.find({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }).select("storedName").lean();
+  await activity(req, param(req, "id"), "task.permanently_deleted", task.id, { key: task.key, title: task.title });
+  await Promise.all([
+    ProjectCommentModel.deleteMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }),
+    ProjectAttachmentModel.deleteMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }),
+    task.deleteOne(),
+    ...attachments.map((attachment: any) => unlink(path.join(attachmentDirectory, attachment.storedName)).catch(() => undefined)),
+  ]);
+  return sendResponseObject({ res, data: { id: task.id } });
 };
 
 export const moveTask = async (req: AuthenticatedRequest, res: Response) => {

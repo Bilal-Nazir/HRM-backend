@@ -1,4 +1,3 @@
-import ProjectModel from "../models/Project";
 import ProjectTaskModel from "../models/ProjectTask";
 import WorkflowStatusModel from "../models/WorkflowStatus";
 import { notifyEmployees } from "../../NotificationModule/services/notificationService";
@@ -18,27 +17,23 @@ export async function sendUpcomingTaskReminders() {
       isDeleted: { $ne: true },
       reminder24hSentAt: { $exists: false },
       "assigneeEmployeeIds.0": { $exists: true },
-      $or: [
-        { startDate: { $gt: now, $lte: windowEnd } },
-        { dueDate: { $gt: now, $lte: windowEnd } },
-      ],
+      dueDate: { $gt: now, $lte: windowEnd },
     }).lean();
     if (!candidates.length) return;
 
     const projectIds = [...new Set(candidates.map((task: any) => String(task.projectId)))];
-    const [doneStatuses, projects] = await Promise.all([
-      WorkflowStatusModel.find({ projectId: { $in: projectIds }, category: "done", isDeleted: { $ne: true } }).select("_id").lean(),
-      ProjectModel.find({ _id: { $in: projectIds }, isDeleted: { $ne: true } }).select("name").lean(),
-    ]);
-    const doneIds = new Set(doneStatuses.map((status: any) => String(status._id)));
-    const projectNames = new Map(projects.map((project: any) => [String(project._id), project.name]));
+    const activeStatuses = await WorkflowStatusModel.find({
+      projectId: { $in: projectIds },
+      category: { $in: ["todo", "in_progress"] },
+      isArchived: false,
+      isDeleted: { $ne: true },
+    }).select("_id").lean();
+    const activeStatusIds = new Set(activeStatuses.map((status: any) => String(status._id)));
 
     for (const task of candidates as any[]) {
-      if (doneIds.has(String(task.workflowStatusId))) continue;
-      const scheduledStart = task.startDate ? new Date(task.startDate) : null;
-      const dueDate = task.dueDate ? new Date(task.dueDate) : null;
-      const target = scheduledStart && scheduledStart > now ? scheduledStart : dueDate;
-      if (!target || target <= now || target > windowEnd) continue;
+      if (!activeStatusIds.has(String(task.workflowStatusId))) continue;
+      const dueDate = new Date(task.dueDate);
+      if (dueDate <= now || dueDate > windowEnd) continue;
 
       const claimed = await ProjectTaskModel.findOneAndUpdate(
         { _id: task._id, reminder24hSentAt: { $exists: false } },
@@ -47,18 +42,17 @@ export async function sendUpcomingTaskReminders() {
       );
       if (!claimed) continue;
       try {
-        const usesStart = Boolean(scheduledStart && scheduledStart.getTime() === target.getTime());
         await notifyEmployees({
           organizationId: String(task.organizationId),
           employeeIds: task.assigneeEmployeeIds.map(String),
           type: "project.task_upcoming",
-          title: usesStart ? "Task starts within 24 hours" : "Task due within 24 hours",
-          message: `${task.key}: ${task.title} · ${target.toLocaleString("en-US", { hour12: true })}`,
+          title: "Task due within 24 hours",
+          message: `${task.key}: ${task.title} · ${dueDate.toLocaleString("en-US", { hour12: true })}`,
           href: `/projects/${task.projectId}/board`,
           projectId: String(task.projectId),
           taskId: String(task._id),
         });
-        logger.info(`Sent upcoming reminder for ${task.key} in ${projectNames.get(String(task.projectId)) || "project"}`);
+        logger.info(`Sent due-date reminder for ${task.key}`);
       } catch (error) {
         await ProjectTaskModel.updateOne({ _id: task._id }, { $unset: { reminder24hSentAt: 1 } });
         logger.error(`Unable to send upcoming reminder for ${task.key}`, { error });

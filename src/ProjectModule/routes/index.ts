@@ -23,9 +23,13 @@ router.patch("/:id/workflow/statuses/reorder", asyncWrapper(controller.reorderSt
 router.patch("/:id/workflow/statuses/:statusId", asyncWrapper(controller.updateStatus));
 router.delete("/:id/workflow/statuses/:statusId", asyncWrapper(controller.deleteStatus));
 router.get("/:id/tasks", asyncWrapper(controller.listTasks));
+router.get("/:id/tasks-trash", asyncWrapper(controller.listDeletedTasks));
 router.post("/:id/tasks", asyncWrapper(controller.createTask));
 router.get("/:id/tasks/:taskId", asyncWrapper(controller.getTask));
 router.patch("/:id/tasks/:taskId", asyncWrapper(controller.updateTask));
+router.delete("/:id/tasks/:taskId", asyncWrapper(controller.deleteTask));
+router.patch("/:id/tasks/:taskId/restore", asyncWrapper(controller.restoreTask));
+router.delete("/:id/tasks/:taskId/permanent", asyncWrapper(controller.permanentlyDeleteTask));
 router.patch("/:id/tasks/:taskId/status", asyncWrapper(controller.moveTask));
 router.patch("/:id/tasks/:taskId/timer", asyncWrapper(controller.updateTaskTimer));
 router.post("/:id/tasks/:taskId/comments", asyncWrapper(controller.addComment));
