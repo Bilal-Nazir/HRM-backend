@@ -20,6 +20,9 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
   @prop() public reviewedByEmployeeId?: string;
   @prop() public reviewedAt?: Date;
   @prop() public reviewComment?: string;
+  @prop() public managerComment?: string;
+  @prop() public managerCommentedAt?: Date;
+  @prop() public managerCommentedByEmployeeId?: string;
 
   public async display(
     this: DocumentType<LeaveRequestClass>,
@@ -59,6 +62,9 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
           this.reviewedByEmployeeId,
         [constants.fields.LeaveRequest.reviewedAt]: this.reviewedAt,
         [constants.fields.LeaveRequest.reviewComment]: this.reviewComment,
+        managerComment: this.managerComment,
+        managerCommentedAt: this.managerCommentedAt,
+        managerCommentedByEmployeeId: this.managerCommentedByEmployeeId,
         [constants.fields.createdAt]: this.createdAt,
         [constants.fields.updatedAt]: this.updatedAt,
       };

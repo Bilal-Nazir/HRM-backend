@@ -502,21 +502,13 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       return next(new ObjectNotFoundException("Pending leave request"));
     }
 
-    const employee = await this.dbReadRecord({
-      Collection: EmployeeModel,
-      readFilter: {
-        _id: obj.employeeId,
-        organizationId: req.auth!.organizationId,
-      },
-      baseFilter: false,
-    });
     const canManageAll =
       req.auth!.permissions.includes("*") ||
       req.auth!.permissions.includes("leave.manage");
-    if (!canManageAll && employee?.managerEmployeeId !== req.auth!.employeeId) {
+    if (!canManageAll) {
       return next(
         new ForbiddenException(
-          "Only the employee's manager or leave admin can review this request",
+          "Only HR or an administrator can approve or reject requests. Managers may add remarks.",
         ),
       );
     }
@@ -570,6 +562,17 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
         [this._modelName]: await updatedObj.display({ detail: true }),
       },
     });
+  };
+
+  public managerCommentController = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const comment = String(req.body.comment || "").trim();
+    if (!comment || comment.length > 1000) return next(new ValidationException("A remark between 1 and 1000 characters is required"));
+    const obj = await this.dbReadRecord({ readFilter: { _id: req.params.id, organizationId: req.auth!.organizationId, status: "pending" }, baseFilter: false });
+    if (!obj) return next(new ObjectNotFoundException("Pending leave request"));
+    const employee = await this.dbReadRecord({ Collection: EmployeeModel, readFilter: { _id: obj.employeeId, organizationId: req.auth!.organizationId, managerEmployeeId: req.auth!.employeeId }, baseFilter: false });
+    if (!employee) return next(new ForbiddenException("Only the employee's manager can add a remark"));
+    const updated = await this.dbUpdateRecord({ data: { managerComment: comment, managerCommentedAt: new Date(), managerCommentedByEmployeeId: req.auth!.employeeId }, readFilter: { _id: obj.id, organizationId: req.auth!.organizationId, status: "pending" }, baseFilter: false });
+    return sendResponseObject({ res, data: { [this._modelName]: await updated!.display({ detail: true }) } });
   };
 
   public cancelController = async (

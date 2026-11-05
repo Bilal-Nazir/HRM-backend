@@ -17,6 +17,17 @@ import { AttendanceClass } from "../models/Attendance";
 import { constants } from "../../node-base/constants";
 import WorkScheduleModel from "../../OrganizationModule/models/WorkSchedule";
 import OrganizationModel from "../../OrganizationModule/models/Organization";
+import TeamModel from "../../OrganizationModule/models/Team";
+import ProjectModel from "../../ProjectModule/models/Project";
+import ProjectTaskModel from "../../ProjectModule/models/ProjectTask";
+import ProjectMemberModel from "../../ProjectModule/models/ProjectMember";
+import ProjectActivityModel from "../../ProjectModule/models/ProjectActivity";
+import ProjectCommentModel from "../../ProjectModule/models/ProjectComment";
+import WorkflowStatusModel from "../../ProjectModule/models/WorkflowStatus";
+import LeaveRequestModel from "../../LeaveModule/models/LeaveRequest";
+import TaskTimeSessionModel from "../../ProjectModule/models/TaskTimeSession";
+import { isValidObjectId } from "mongoose";
+import { dailyTaskActivity, nextReportDay, reportDay, reportMidnight } from "../utils/taskActivityReport";
 
 const attendanceMetrics = (record: AttendanceClass, schedule?: { timezone: string; weeklyPattern: { day: number; startTime: string; endTime: string; working: boolean }[] }) => {
   const hours = record.checkOutAt ? Math.max(0, (new Date(record.checkOutAt).getTime() - new Date(record.checkInAt).getTime()) / 3600000) : 0;
@@ -144,6 +155,85 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     });
   };
 
+  public activityOptionsController = async (req: AuthenticatedRequest, res: Response) => {
+    const organizationId = req.auth!.organizationId!;
+    const [employees, teams, projects] = await Promise.all([
+      EmployeeModel.find({ organizationId, employmentStatus: "active", isDeleted: { $ne: true } }).select("firstName lastName employeeCode jobTitle teamId").sort({ firstName: 1, lastName: 1 }).lean(),
+      TeamModel.find({ organizationId, status: "active", isDeleted: { $ne: true } }).select("name leadEmployeeId").sort({ name: 1 }).lean(),
+      ProjectModel.find({ organizationId, isDeleted: { $ne: true }, status: { $ne: "archived" } }).select("name key").sort({ name: 1 }).lean(),
+    ]);
+    const row = (value: any) => ({ ...value, id: String(value._id), _id: undefined });
+    return sendResponseObject({ res, data: { employees: employees.map(row), teams: teams.map(row), projects: projects.map(row) } });
+  };
+
+  public employeeActivityController = async (req: AuthenticatedRequest, res: Response) => {
+    const organizationId = req.auth!.organizationId!;
+    const employeeId = typeof req.query.employeeId === "string" ? req.query.employeeId : "";
+    if (!isValidObjectId(employeeId)) throw new ValidationException("Choose an employee");
+    const employee = await EmployeeModel.findOne({ _id: employeeId, organizationId, isDeleted: { $ne: true } }).select("firstName lastName employeeCode jobTitle teamId employmentStatus timezone").lean();
+    if (!employee) throw new ObjectNotFoundException("Employee");
+    const organization = await OrganizationModel.findById(organizationId).select("timezone").lean();
+    let timeZone = employee.timezone || organization?.timezone || "UTC";
+    try { new Intl.DateTimeFormat("en-US", { timeZone }).format(); } catch { timeZone = "UTC"; }
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const today = reportDay(new Date(), timeZone);
+    const monthStart = `${today.slice(0, 8)}01`;
+    const from = typeof req.query.from === "string" && datePattern.test(req.query.from) ? req.query.from : monthStart;
+    const to = typeof req.query.to === "string" && datePattern.test(req.query.to) ? req.query.to : today;
+    if (from > to) throw new ValidationException("Start date must be before end date");
+    if ([from, to].some((day) => Number.isNaN(Date.parse(`${day}T00:00:00Z`)) || new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) !== day)) throw new ValidationException("Choose valid report dates");
+    if ((Date.parse(to) - Date.parse(from)) / 86400000 > 366) throw new ValidationException("Choose a report period of one year or less");
+    const fromDate = reportMidnight(from, timeZone), toDate = reportMidnight(nextReportDay(to), timeZone);
+    const projectId = typeof req.query.projectId === "string" && isValidObjectId(req.query.projectId) ? req.query.projectId : undefined;
+    const projectFilter = projectId ? { projectId } : {};
+
+    const [attendance, tasks, requests, comments, projectActivity, memberships, timerSessions] = await Promise.all([
+      AttendanceModel.find({ organizationId, employeeId, isDeleted: { $ne: true }, workDate: { $gte: from, $lte: to } }).sort({ checkInAt: -1 }).lean(),
+      ProjectTaskModel.find({ organizationId, isDeleted: { $ne: true }, ...(projectId ? { projectId } : {}), $or: [{ assigneeEmployeeIds: employeeId }, { reporterEmployeeId: employeeId }] }).sort({ updatedAt: -1 }).limit(500).lean(),
+      LeaveRequestModel.find({ organizationId, employeeId, isDeleted: { $ne: true }, $or: [{ createdAt: { $gte: fromDate, $lt: toDate } }, { startDate: { $lt: toDate }, endDate: { $gte: fromDate } }] }).sort({ createdAt: -1 }).lean(),
+      ProjectCommentModel.find({ organizationId, isDeleted: { $ne: true }, ...projectFilter, createdAt: { $gte: fromDate, $lt: toDate }, $or: [{ authorEmployeeId: employeeId }, { mentionedEmployeeIds: employeeId }] }).sort({ createdAt: -1 }).limit(500).lean(),
+      ProjectActivityModel.find({ organizationId, isDeleted: { $ne: true }, ...projectFilter, actorEmployeeId: employeeId, createdAt: { $gte: fromDate, $lt: toDate } }).sort({ createdAt: -1 }).limit(1000).lean(),
+      ProjectMemberModel.find({ organizationId, employeeId, status: "active", isDeleted: { $ne: true }, ...(projectId ? { projectId } : {}) }).select("projectId role").lean(),
+      TaskTimeSessionModel.find({ organizationId, employeeId, isDeleted: { $ne: true }, ...(projectId ? { projectId } : {}), startedAt: { $lt: toDate }, $or: [{ endedAt: { $gt: fromDate } }, { endedAt: { $exists: false } }] }).sort({ startedAt: -1 }).limit(2000).lean(),
+    ]);
+    const missingTimerTaskIds = [...new Set([...timerSessions.map((session: any) => String(session.taskId)), ...projectActivity.filter((event: any) => event.taskId).map((event: any) => String(event.taskId))].filter((id) => !tasks.some((task: any) => String(task._id) === id)))];
+    const timerTasks = missingTimerTaskIds.length ? await ProjectTaskModel.find({ organizationId, _id: { $in: missingTimerTaskIds }, isDeleted: { $ne: true } }).lean() : [];
+    const taskDocuments = [...tasks, ...timerTasks];
+    const projectIds = [...new Set([...taskDocuments.map((task: any) => String(task.projectId)), ...comments.map((comment: any) => String(comment.projectId)), ...projectActivity.map((event: any) => String(event.projectId)), ...memberships.map((member: any) => String(member.projectId))])];
+    const taskIds = [...new Set([...taskDocuments.map((task: any) => String(task._id)), ...comments.map((comment: any) => String(comment.taskId)), ...projectActivity.map((event: any) => event.taskId ? String(event.taskId) : "").filter(Boolean)])];
+    const [projects, relatedTasks, statuses, schedules] = await Promise.all([
+      ProjectModel.find({ organizationId, _id: { $in: projectIds } }).select("name key").lean(),
+      ProjectTaskModel.find({ organizationId, _id: { $in: taskIds } }).select("title key projectId workflowStatusId").lean(),
+      WorkflowStatusModel.find({ organizationId, projectId: { $in: projectIds }, isDeleted: { $ne: true } }).select("name category").lean(),
+      this.scheduleLookup(organizationId, [employeeId]),
+    ]);
+    const projectMap = new Map(projects.map((project: any) => [String(project._id), { id: String(project._id), name: project.name, key: project.key }]));
+    const taskMap = new Map(relatedTasks.map((task: any) => [String(task._id), { id: String(task._id), title: task.title, key: task.key, projectId: String(task.projectId) }]));
+    const statusMap = new Map(statuses.map((status: any) => [String(status._id), { name: status.name, category: status.category }]));
+    const now = new Date();
+    const location = (point: any) => point ? { latitude: point.latitude, longitude: point.longitude, accuracyMeters: point.accuracyMeters, address: point.address } : null;
+    const attendanceRows = attendance.map((record: any) => ({ id: String(record._id), workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: location(record.checkInLocation), checkOutLocation: location(record.checkOutLocation), checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, status: record.status, ...attendanceMetrics(record, schedules.get(employeeId)) }));
+    const totalAttendanceHours = attendanceRows.reduce((sum, record) => sum + record.workedHours, 0);
+    const timerRows = timerSessions.map((session: any) => { const durationSeconds = session.endedAt ? session.durationSeconds || Math.max(0, Math.floor((new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime()) / 1000)) : Math.max(0, Math.floor((now.getTime() - new Date(session.startedAt).getTime()) / 1000)); return { id: String(session._id), taskId: String(session.taskId), projectId: String(session.projectId), startedAt: session.startedAt, endedAt: session.endedAt, durationSeconds, stopReason: session.stopReason, running: !session.endedAt }; });
+    const taskDays = dailyTaskActivity(timerRows, projectActivity, from, to, timeZone, now).map((day) => ({ ...day, tasks: day.tasks.map((row) => ({ ...row, task: taskMap.get(row.taskId) || null, project: projectMap.get(taskMap.get(row.taskId)?.projectId || "") || null })) }));
+    const taskPeriodSeconds = taskDays.reduce((sum, day) => sum + day.seconds, 0);
+    const taskPeriodCount = new Set(taskDays.flatMap((day) => day.tasks.map((task) => task.taskId))).size;
+    const taskRows = taskDocuments.map((task: any) => { const running = task.timeStartedAt ? Math.max(0, Math.floor((now.getTime() - new Date(task.timeStartedAt).getTime()) / 1000)) : 0; const history = timerRows.filter((session) => session.taskId === String(task._id)); const sessionSeconds = history.reduce((sum, session) => sum + session.durationSeconds, 0); const trackedSeconds = (task.accumulatedSeconds || 0) + running; return { id: String(task._id), key: task.key, title: task.title, priority: task.priority, dueDate: task.dueDate, startDate: task.startDate, status: statusMap.get(String(task.workflowStatusId)) || null, project: projectMap.get(String(task.projectId)) || null, assigned: task.assigneeEmployeeIds.includes(employeeId), reported: task.reporterEmployeeId === employeeId, trackedSeconds, previouslyRecordedSeconds: Math.max(0, trackedSeconds - sessionSeconds), timerSessions: history, running: Boolean(task.timeStartedAt), updatedAt: task.updatedAt }; });
+    const trackedTaskSeconds = taskRows.reduce((sum, task) => sum + task.trackedSeconds, 0);
+    const commentRows = comments.map((comment: any) => ({ id: String(comment._id), body: comment.body, authored: comment.authorEmployeeId === employeeId, mentioned: comment.mentionedEmployeeIds.includes(employeeId), createdAt: comment.createdAt, task: taskMap.get(String(comment.taskId)) || null, project: projectMap.get(String(comment.projectId)) || null }));
+    const requestRows = requests.map((request: any) => ({ id: String(request._id), kind: request.requestKind, startDate: request.startDate, endDate: request.endDate, totalDays: request.totalDays, reason: request.reason, status: request.status, managerComment: request.managerComment, reviewComment: request.reviewComment, createdAt: request.createdAt }));
+    const timeline: any[] = [];
+    attendanceRows.forEach((record) => { timeline.push({ id: `in-${record.id}`, type: "attendance.check_in", at: record.checkInAt, title: "Checked in", detail: record.workDate }); if (record.checkOutAt) timeline.push({ id: `out-${record.id}`, type: "attendance.check_out", at: record.checkOutAt, title: "Checked out", detail: `${record.workedHours.toFixed(2)} hours` }); });
+    projectActivity.forEach((event: any) => timeline.push({ id: `activity-${event._id}`, type: event.action, at: event.createdAt, title: event.action.replaceAll(".", " ").replaceAll("_", " "), detail: taskMap.get(String(event.taskId))?.key, task: taskMap.get(String(event.taskId)), project: projectMap.get(String(event.projectId)) }));
+    commentRows.forEach((comment) => timeline.push({ id: `comment-${comment.id}`, type: comment.authored ? "comment.authored" : "comment.mentioned", at: comment.createdAt, title: comment.authored ? "Added a comment" : "Was mentioned in a comment", detail: comment.task?.key, task: comment.task, project: comment.project }));
+    timerRows.forEach((session) => { const task = taskMap.get(session.taskId); timeline.push({ id: `timer-start-${session.id}`, type: "task.timer_started", at: session.startedAt, title: "Started task timer", detail: task?.key, project: projectMap.get(session.projectId) }); if (session.endedAt) timeline.push({ id: `timer-stop-${session.id}`, type: session.stopReason === "pause" ? "task.timer_paused" : "task.timer_stopped", at: session.endedAt, title: session.stopReason === "pause" ? "Paused task timer" : "Stopped task timer", detail: `${task?.key || "Task"} · ${Math.floor(session.durationSeconds / 60)}m`, project: projectMap.get(session.projectId) }); });
+    requestRows.forEach((request) => timeline.push({ id: `request-${request.id}`, type: "request.created", at: request.createdAt, title: `${request.kind.replaceAll("_", " ")} request`, detail: request.status }));
+    timeline.sort((a, b) => +new Date(b.at) - +new Date(a.at));
+    const completed = taskRows.filter((task) => task.status?.category === "done").length;
+    const overdue = taskRows.filter((task) => task.dueDate && new Date(task.dueDate) < now && task.status?.category !== "done").length;
+    return sendResponseObject({ res, data: { timeZone, taskDays, taskPeriodSummary: { seconds: taskPeriodSeconds, taskCount: taskPeriodCount, workingDays: taskDays.filter((day) => day.seconds > 0).length, sessionCount: timerRows.length }, limitsReached: { tasks: tasks.length >= 500, activities: projectActivity.length >= 1000, timerSessions: timerSessions.length >= 2000 }, employee: { id: String(employee._id), firstName: employee.firstName, lastName: employee.lastName, employeeCode: employee.employeeCode, jobTitle: employee.jobTitle, teamId: employee.teamId }, range: { from, to }, summary: { attendanceHours: Math.round(totalAttendanceHours * 100) / 100, attendanceSessions: attendanceRows.length, workingDays: new Set(attendanceRows.map((record) => record.workDate)).size, lateCheckIns: attendanceRows.filter((record) => record.flags.includes("late_check_in")).length, earlyCheckOuts: attendanceRows.filter((record) => record.flags.includes("early_check_out")).length, trackedTaskHours: Math.round(trackedTaskSeconds / 36) / 100, totalTasks: taskRows.length, completedTasks: completed, overdueTasks: overdue, openRequests: requestRows.filter((request) => request.status === "pending").length, mentionsReceived: commentRows.filter((comment) => comment.mentioned).length }, attendance: attendanceRows, tasks: taskRows, timerSessions: timerRows, requests: requestRows, comments: commentRows, memberships: memberships.map((member: any) => ({ project: projectMap.get(String(member.projectId)) || null, role: member.role })), timeline: timeline.filter((event) => +new Date(event.at) >= +fromDate && +new Date(event.at) < +toDate).slice(0, 1500) } });
+  };
+
   public summaryController = async (req: AuthenticatedRequest, res: Response) => {
     const organizationId = req.auth!.organizationId!;
     const isAdmin = req.query.scope === "organization" && req.auth!.permissions.some((permission) => ["*", "attendance.read.team"].includes(permission));
@@ -166,7 +256,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       if (metrics.flags.includes("late_check_in")) flagCounts.lateCheckIns++;
       if (metrics.flags.includes("early_check_out")) flagCounts.earlyCheckOuts++;
       if (metrics.flags.includes("outside_office_area")) flagCounts.outsideOfficeArea++;
-      return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, ...metrics };
+      return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: record.checkInLocation, checkOutLocation: record.checkOutLocation, checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, ...metrics };
     });
     return sendResponseObject({ res, data: { totalWorkingDays: new Set(records.map((record) => `${record.employeeId}:${record.workDate}`)).size, totalWorkedHours: Math.round(totalWorkedHours * 100) / 100, buckets, flags: flagCounts, daily: daily.slice(0, 2000) } });
   };

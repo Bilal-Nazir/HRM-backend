@@ -10,6 +10,7 @@ import {
 } from "../database/scripts";
 import { createDefaultLeaveTypesScript } from "../database/scripts/createDefaultLeaveTypesScript";
 import { logger, sendResponseObject } from "../node-base/utils";
+import { startTaskReminderWorker } from "../ProjectModule/services/taskReminderService";
 
 const startServer = async () => {
   const app: Express = express();
@@ -44,8 +45,10 @@ const startServer = async () => {
   const server = app.listen(config.server.port, "0.0.0.0", () => {
     logger.info(`HRM backend listening on port ${config.server.port}`);
   });
+  const taskReminderTimer = startTaskReminderWorker();
 
   const shutdown = async () => {
+    clearInterval(taskReminderTimer);
     server.close(async () => {
       await Promise.all([MongoDatabase.close(), RedisDatabase.close()]);
       process.exit(0);

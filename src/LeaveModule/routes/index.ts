@@ -53,6 +53,11 @@ router.patch(
   asyncWrapper(LeaveController.reviewController),
 );
 router.patch(
+  "/requests/:id/manager-comment",
+  authMiddleware(["leave.approve"]),
+  asyncWrapper(LeaveController.managerCommentController),
+);
+router.patch(
   "/requests/:id/cancel",
   authMiddleware(["leave.request"]),
   asyncWrapper(LeaveController.cancelController),

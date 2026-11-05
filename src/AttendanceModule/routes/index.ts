@@ -27,6 +27,18 @@ router.get(
   requireOrganization,
   asyncWrapper(AttendanceController.manageController),
 );
+router.get(
+  "/activity-options",
+  authMiddleware(["attendance.read.team", "employee.read.all"]),
+  requireOrganization,
+  asyncWrapper(AttendanceController.activityOptionsController),
+);
+router.get(
+  "/employee-activity",
+  authMiddleware(["attendance.read.team", "employee.read.all"]),
+  requireOrganization,
+  asyncWrapper(AttendanceController.employeeActivityController),
+);
 router.post(
   "/check-in",
   authMiddleware(["attendance.checkin"]),

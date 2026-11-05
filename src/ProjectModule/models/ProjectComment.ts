@@ -7,6 +7,7 @@ export class ProjectCommentClass extends BaseModelClass<ProjectCommentClass> {
   @prop({ required: true }) projectId!: string;
   @prop({ required: true }) taskId!: string;
   @prop() authorEmployeeId?: string;
+  @prop({ type: () => [String], default: [] }) mentionedEmployeeIds!: string[];
   @prop({ required: true, trim: true }) body!: string;
 }
 export default getModelForClass(ProjectCommentClass, baseModelOptions);

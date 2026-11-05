@@ -267,6 +267,7 @@ export class OrganizationUnitController extends BaseControllerClass<any> {
         ],
         code: [{ rule: "datatype", datatype: "String" }],
         departmentId: [{ rule: "format", type: "id" }],
+        leadEmployeeId: [{ rule: "format", type: "id" }],
         latitude: [
           { rule: "datatype", datatype: "Number" },
           { rule: "minValue", value: -90 },
