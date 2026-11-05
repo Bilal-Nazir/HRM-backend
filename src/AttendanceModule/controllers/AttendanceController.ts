@@ -28,6 +28,7 @@ import LeaveRequestModel from "../../LeaveModule/models/LeaveRequest";
 import TaskTimeSessionModel from "../../ProjectModule/models/TaskTimeSession";
 import { isValidObjectId } from "mongoose";
 import { dailyTaskActivity, nextReportDay, reportDay, reportMidnight } from "../utils/taskActivityReport";
+import { pauseEmployeeTimersAtCheckout } from "../../ProjectModule/services/checkoutTimerService";
 
 const attendanceMetrics = (record: AttendanceClass, schedule?: { timezone: string; weeklyPattern: { day: number; startTime: string; endTime: string; working: boolean }[] }) => {
   const hours = record.checkOutAt ? Math.max(0, (new Date(record.checkOutAt).getTime() - new Date(record.checkInAt).getTime()) / 3600000) : 0;
@@ -511,11 +512,13 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       longitude: location.longitude,
     });
 
+    const checkOutAt = new Date();
+    const pausedTasks = await pauseEmployeeTimersAtCheckout({ organizationId, employeeId, userId: req.auth!.userId, at: checkOutAt });
     const updatedObj = await this.dbUpdateRecord({
       obj,
       filterObj: false,
       data: {
-        checkOutAt: new Date(),
+        checkOutAt,
         checkOutLocation: location,
         checkOutDistanceMeters: officeData.distance,
         checkOutWithinGeofence: officeData.withinGeofence,
@@ -540,6 +543,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       res,
       data: {
         [this._modelName]: await updatedObj.display({ detail: true }),
+        pausedTaskCount: pausedTasks.length,
       },
     });
   };
