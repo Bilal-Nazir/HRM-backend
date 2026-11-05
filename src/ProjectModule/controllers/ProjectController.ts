@@ -11,6 +11,7 @@ import ProjectCommentModel from "../models/ProjectComment";
 import ProjectActivityModel from "../models/ProjectActivity";
 import ProjectAttachmentModel from "../models/ProjectAttachment";
 import ProjectReminderModel from "../models/ProjectReminder";
+import TaskTimeSessionModel from "../models/TaskTimeSession";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -52,6 +53,13 @@ const timerActionFor = (status: any): "none" | "start" | "stop" => {
   if (status?.category === "in_progress") return "start";
   if (status?.category === "done") return "stop";
   return "none";
+};
+const timerEmployeeId = (req: AuthenticatedRequest, task: any) => task.assigneeEmployeeIds?.includes(req.auth!.employeeId) ? req.auth!.employeeId : task.assigneeEmployeeIds?.length === 1 ? task.assigneeEmployeeIds[0] : req.auth!.employeeId;
+const startTimerSession = (req: AuthenticatedRequest, task: any, startedAt: Date) => TaskTimeSessionModel.create({ organizationId: req.auth!.organizationId, projectId: task.projectId, taskId: task.id, employeeId: timerEmployeeId(req, task), startedByUserId: req.auth!.userId, startedAt });
+const stopTimerSession = async (req: AuthenticatedRequest, task: any, endedAt: Date, reason: "pause" | "status_change", fallbackStartedAt: Date) => {
+  const open = await TaskTimeSessionModel.findOne({ organizationId: req.auth!.organizationId, taskId: task.id, endedAt: { $exists: false }, isDeleted: { $ne: true } }).sort({ startedAt: -1 });
+  if (open) { open.endedAt = endedAt; open.durationSeconds = Math.max(0, Math.floor((endedAt.getTime() - open.startedAt.getTime()) / 1000)); open.stopReason = reason; await open.save(); return; }
+  await TaskTimeSessionModel.create({ organizationId: req.auth!.organizationId, projectId: task.projectId, taskId: task.id, employeeId: timerEmployeeId(req, task), startedByUserId: req.auth!.userId, startedAt: fallbackStartedAt, endedAt, durationSeconds: Math.max(0, Math.floor((endedAt.getTime() - fallbackStartedAt.getTime()) / 1000)), stopReason: reason });
 };
 
 async function visibleTask(req: AuthenticatedRequest, projectId: string, taskId: string) {
@@ -369,6 +377,7 @@ export const createTask = async (req: AuthenticatedRequest, res: Response) => {
   const issueNumber = sequenced.nextIssueNumber;
   if (req.body.parentStoryId && !(await ProjectTaskModel.exists({ _id: object(req.body.parentStoryId), organizationId: req.auth!.organizationId, projectId: project.id, type: "story", isDeleted: { $ne: true } }))) throw new ValidationException("Parent story is not part of this project");
   const task = await ProjectTaskModel.create({ organizationId: req.auth!.organizationId, projectId: project.id, issueNumber, key: `${project.key}-${issueNumber}`, type, title, description: String(req.body.description || "").trim(), parentStoryId: req.body.parentStoryId || undefined, assigneeEmployeeIds, reporterEmployeeId: req.auth!.employeeId, createdBy: req.auth!.userId, priority: req.body.priority || "medium", workflowStatusId, ...(timerActionFor(initialStatus) === "start" ? { timeStartedAt: new Date() } : {}), startDate: optionalDate(req.body.startDate), dueDate: optionalDate(req.body.dueDate), estimatedHours: req.body.estimatedHours === "" || req.body.estimatedHours === undefined ? undefined : Number(req.body.estimatedHours), labels: Array.isArray(req.body.labels) ? req.body.labels.map((label: unknown) => String(label).trim()).filter(Boolean).slice(0, 20) : [] });
+  if (task.timeStartedAt) await startTimerSession(req, task, task.timeStartedAt);
   await activity(req, project.id, `${type}.created`, task.id, { key: task.key, title });
   await notifyProject(req, project, task, `project.${type}_created`, `New ${type} in ${project.name}`, title, assigneeEmployeeIds);
   return sendResponseObject({ res, code: 201, data: { task: serialize(task) } });
@@ -426,6 +435,7 @@ export const permanentlyDeleteTask = async (req: AuthenticatedRequest, res: Resp
   await Promise.all([
     ProjectCommentModel.deleteMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }),
     ProjectAttachmentModel.deleteMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }),
+    TaskTimeSessionModel.deleteMany({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }),
     task.deleteOne(),
     ...attachments.map((attachment: any) => unlink(path.join(attachmentDirectory, attachment.storedName)).catch(() => undefined)),
   ]);
@@ -446,6 +456,7 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   // not alter the timer, so it can continue across review/QA columns.
   const timerAction = timerActionFor(target);
   if (timerAction === "stop" && task.timeStartedAt) {
+    await stopTimerSession(req, task, now, "status_change", task.timeStartedAt);
     task.accumulatedSeconds = (task.accumulatedSeconds || 0) + Math.max(0, Math.floor((now.getTime() - task.timeStartedAt.getTime()) / 1000));
     task.timeStoppedAt = now;
     task.timeStartedAt = undefined;
@@ -453,6 +464,7 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   if (timerAction === "start" && !task.timeStartedAt) {
     task.timeStartedAt = now;
     task.timeStoppedAt = undefined;
+    await startTimerSession(req, task, now);
   }
   task.workflowStatusId = target.id;
   await task.save();
@@ -468,12 +480,14 @@ export const updateTaskTimer = async (req: AuthenticatedRequest, res: Response) 
   if (!["start", "pause"].includes(action)) throw new ValidationException("Timer action must be start or pause");
   const now = new Date();
   if (action === "pause" && task.timeStartedAt) {
+    await stopTimerSession(req, task, now, "pause", task.timeStartedAt);
     task.accumulatedSeconds = (task.accumulatedSeconds || 0) + Math.max(0, Math.floor((now.getTime() - task.timeStartedAt.getTime()) / 1000));
     task.timeStoppedAt = now;
     task.timeStartedAt = undefined;
   } else if (action === "start" && !task.timeStartedAt) {
     task.timeStartedAt = now;
     task.timeStoppedAt = undefined;
+    await startTimerSession(req, task, now);
   }
   await task.save();
   await activity(req, param(req, "id"), action === "start" ? "task.timer_started" : "task.timer_paused", task.id);
