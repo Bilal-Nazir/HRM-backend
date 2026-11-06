@@ -48,7 +48,7 @@ export async function sendUpcomingTaskReminders() {
           type: "project.task_upcoming",
           title: "Task due within 24 hours",
           message: `${task.key}: ${task.title} · ${dueDate.toLocaleString("en-US", { hour12: true })}`,
-          href: `/projects/${task.projectId}/board`,
+          href: `/projects/${task.projectId}/tasks/${task._id}`,
           projectId: String(task.projectId),
           taskId: String(task._id),
         });

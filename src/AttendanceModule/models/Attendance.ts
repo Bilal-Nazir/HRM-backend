@@ -1,6 +1,7 @@
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
+import { AttendanceDevice } from "./AttendanceDevice";
 const { getModelForClass } = TypeGoose;
 
 export class LocationPoint {
@@ -21,6 +22,8 @@ export class AttendanceClass extends BaseModelClass<AttendanceClass> {
   @prop({ _id: false, type: () => LocationPoint, required: true })
   public checkInLocation!: LocationPoint;
   @prop() public checkOutAt?: Date;
+  @prop({ _id: false, type: () => AttendanceDevice }) public checkInDevice?: AttendanceDevice;
+  @prop({ _id: false, type: () => AttendanceDevice }) public checkOutDevice?: AttendanceDevice;
   @prop({ _id: false, type: () => LocationPoint })
   public checkOutLocation?: LocationPoint;
   @prop() public checkInDistanceMeters?: number;
@@ -38,12 +41,14 @@ export class AttendanceClass extends BaseModelClass<AttendanceClass> {
       includes = [],
       excludes = [],
       detail = false,
+      includeDevice = false,
       baseData = {},
     }: {
       reset?: boolean;
       includes?: any[];
       excludes?: string[];
       detail?: boolean;
+      includeDevice?: boolean;
       baseData?: Record<string, any>;
     } = {},
   ) {
@@ -76,6 +81,7 @@ export class AttendanceClass extends BaseModelClass<AttendanceClass> {
         [constants.fields.createdAt]: this.createdAt,
         [constants.fields.updatedAt]: this.updatedAt,
       };
+    if (includeDevice) data = { ...data, checkInDevice: this.checkInDevice, checkOutDevice: this.checkOutDevice };
     data = { ...data, ...baseData };
     return this.display__includes_excludes({ data, reset, includes, excludes });
   }

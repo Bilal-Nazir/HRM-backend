@@ -29,6 +29,7 @@ import TaskTimeSessionModel from "../../ProjectModule/models/TaskTimeSession";
 import { isValidObjectId } from "mongoose";
 import { dailyTaskActivity, nextReportDay, reportDay, reportMidnight } from "../utils/taskActivityReport";
 import { pauseEmployeeTimersAtCheckout } from "../../ProjectModule/services/checkoutTimerService";
+import { attendanceDeviceInfo } from "../utils/deviceInfo";
 
 const attendanceMetrics = (record: AttendanceClass, schedule?: { timezone: string; weeklyPattern: { day: number; startTime: string; endTime: string; working: boolean }[] }) => {
   const hours = record.checkOutAt ? Math.max(0, (new Date(record.checkOutAt).getTime() - new Date(record.checkInAt).getTime()) / 3600000) : 0;
@@ -143,7 +144,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       data: {
         attendances: await Promise.all(
           objs.map(async (obj) => ({
-            ...(await obj.display({ detail: true })),
+            ...(await obj.display({ detail: true, includeDevice: true })),
             ...attendanceMetrics(obj, schedules.get(obj.employeeId)),
             employee: names.get(obj.employeeId) || null,
           })),
@@ -213,7 +214,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     const statusMap = new Map(statuses.map((status: any) => [String(status._id), { name: status.name, category: status.category }]));
     const now = new Date();
     const location = (point: any) => point ? { latitude: point.latitude, longitude: point.longitude, accuracyMeters: point.accuracyMeters, address: point.address } : null;
-    const attendanceRows = attendance.map((record: any) => ({ id: String(record._id), workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: location(record.checkInLocation), checkOutLocation: location(record.checkOutLocation), checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, status: record.status, ...attendanceMetrics(record, schedules.get(employeeId)) }));
+    const attendanceRows = attendance.map((record: any) => ({ id: String(record._id), workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: location(record.checkInLocation), checkOutLocation: location(record.checkOutLocation), checkInDevice: record.checkInDevice, checkOutDevice: record.checkOutDevice, checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, status: record.status, ...attendanceMetrics(record, schedules.get(employeeId)) }));
     const totalAttendanceHours = attendanceRows.reduce((sum, record) => sum + record.workedHours, 0);
     const timerRows = timerSessions.map((session: any) => { const durationSeconds = session.endedAt ? session.durationSeconds || Math.max(0, Math.floor((new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime()) / 1000)) : Math.max(0, Math.floor((now.getTime() - new Date(session.startedAt).getTime()) / 1000)); return { id: String(session._id), taskId: String(session.taskId), projectId: String(session.projectId), startedAt: session.startedAt, endedAt: session.endedAt, durationSeconds, stopReason: session.stopReason, running: !session.endedAt }; });
     const taskDays = dailyTaskActivity(timerRows, projectActivity, from, to, timeZone, now).map((day) => ({ ...day, tasks: day.tasks.map((row) => ({ ...row, task: taskMap.get(row.taskId) || null, project: projectMap.get(taskMap.get(row.taskId)?.projectId || "") || null })) }));
@@ -227,7 +228,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     attendanceRows.forEach((record) => { timeline.push({ id: `in-${record.id}`, type: "attendance.check_in", at: record.checkInAt, title: "Checked in", detail: record.workDate }); if (record.checkOutAt) timeline.push({ id: `out-${record.id}`, type: "attendance.check_out", at: record.checkOutAt, title: "Checked out", detail: `${record.workedHours.toFixed(2)} hours` }); });
     projectActivity.forEach((event: any) => timeline.push({ id: `activity-${event._id}`, type: event.action, at: event.createdAt, title: event.action.replaceAll(".", " ").replaceAll("_", " "), detail: taskMap.get(String(event.taskId))?.key, task: taskMap.get(String(event.taskId)), project: projectMap.get(String(event.projectId)) }));
     commentRows.forEach((comment) => timeline.push({ id: `comment-${comment.id}`, type: comment.authored ? "comment.authored" : "comment.mentioned", at: comment.createdAt, title: comment.authored ? "Added a comment" : "Was mentioned in a comment", detail: comment.task?.key, task: comment.task, project: comment.project }));
-    timerRows.forEach((session) => { const task = taskMap.get(session.taskId); timeline.push({ id: `timer-start-${session.id}`, type: "task.timer_started", at: session.startedAt, title: "Started task timer", detail: task?.key, project: projectMap.get(session.projectId) }); if (session.endedAt) timeline.push({ id: `timer-stop-${session.id}`, type: session.stopReason === "pause" ? "task.timer_paused" : "task.timer_stopped", at: session.endedAt, title: session.stopReason === "pause" ? "Paused task timer" : "Stopped task timer", detail: `${task?.key || "Task"} · ${Math.floor(session.durationSeconds / 60)}m`, project: projectMap.get(session.projectId) }); });
+    timerRows.forEach((session) => { const task = taskMap.get(session.taskId); timeline.push({ id: `timer-start-${session.id}`, type: "task.timer_started", at: session.startedAt, title: "Started task timer", detail: task?.key, task, project: projectMap.get(session.projectId) }); if (session.endedAt) timeline.push({ id: `timer-stop-${session.id}`, type: session.stopReason === "pause" ? "task.timer_paused" : "task.timer_stopped", at: session.endedAt, title: session.stopReason === "pause" ? "Paused task timer" : "Stopped task timer", detail: `${task?.key || "Task"} · ${Math.floor(session.durationSeconds / 60)}m`, task, project: projectMap.get(session.projectId) }); });
     requestRows.forEach((request) => timeline.push({ id: `request-${request.id}`, type: "request.created", at: request.createdAt, title: `${request.kind.replaceAll("_", " ")} request`, detail: request.status }));
     timeline.sort((a, b) => +new Date(b.at) - +new Date(a.at));
     const completed = taskRows.filter((task) => task.status?.category === "done").length;
@@ -257,7 +258,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       if (metrics.flags.includes("late_check_in")) flagCounts.lateCheckIns++;
       if (metrics.flags.includes("early_check_out")) flagCounts.earlyCheckOuts++;
       if (metrics.flags.includes("outside_office_area")) flagCounts.outsideOfficeArea++;
-      return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: record.checkInLocation, checkOutLocation: record.checkOutLocation, checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, ...metrics };
+      return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: record.checkInLocation, checkOutLocation: record.checkOutLocation, ...(isAdmin ? { checkInDevice: record.checkInDevice, checkOutDevice: record.checkOutDevice } : {}), checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, ...metrics };
     });
     return sendResponseObject({ res, data: { totalWorkingDays: new Set(records.map((record) => `${record.employeeId}:${record.workDate}`)).size, totalWorkedHours: Math.round(totalWorkedHours * 100) / 100, buckets, flags: flagCounts, daily: daily.slice(0, 2000) } });
   };
@@ -429,6 +430,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
         workDate: new Date().toISOString().slice(0, 10),
         checkInAt: new Date(),
         checkInLocation: location,
+        checkInDevice: attendanceDeviceInfo(req),
         checkInDistanceMeters: officeData.distance,
         checkInWithinGeofence: officeData.withinGeofence,
         status: officeData.withinGeofence === false ? "flagged" : "open",
@@ -519,6 +521,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       filterObj: false,
       data: {
         checkOutAt,
+        checkOutDevice: attendanceDeviceInfo(req, checkOutAt),
         checkOutLocation: location,
         checkOutDistanceMeters: officeData.distance,
         checkOutWithinGeofence: officeData.withinGeofence,
