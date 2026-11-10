@@ -18,6 +18,7 @@ router.post("/:id/members", asyncWrapper(controller.addMembers));
 router.patch("/:id/members/:employeeId", asyncWrapper(controller.updateMember));
 router.delete("/:id/members/:employeeId", asyncWrapper(controller.removeMember));
 router.get("/:id/workflow", asyncWrapper(controller.getWorkflow));
+router.patch("/:id/workflow/durations", asyncWrapper(controller.updateDurationSettings));
 router.post("/:id/workflow/statuses", asyncWrapper(controller.createStatus));
 router.patch("/:id/workflow/statuses/reorder", asyncWrapper(controller.reorderStatuses));
 router.patch("/:id/workflow/statuses/:statusId", asyncWrapper(controller.updateStatus));

@@ -91,6 +91,43 @@ scripts, Compose configuration, and Nginx configuration do **not** automatically
 overwrite themselves on push. Changes to infrastructure files require an explicit
 reviewed server update through `ssh aws-dev`.
 
+### Attendance public internet IP
+
+The request path is public Nginx → loopback-only Caddy → private backend. Nginx
+must overwrite `X-Forwarded-For` with `$remote_addr` at the public edge; Caddy
+must trust the host/Docker hop so it preserves that address. Without this,
+attendance records contain Docker addresses such as `172.18.0.1`.
+
+The updated `Caddyfile` enables strict, right-to-left forwarding-header parsing.
+Only `compose.aws.yaml` opts in to `CADDY_TRUSTED_PROXIES=private_ranges`, since
+its proxy port is published on **127.0.0.1 only**. Do not enable that option on
+an internet-facing Caddy port. The backend trusts local/private proxy hops by
+default; override `TRUST_PROXY_CIDRS` with narrower proxy CIDRs for another
+topology, or `false` for an API exposed directly to the internet. Keep backend
+8080 inaccessible from the public internet.
+
+For an existing AWS installation, app image pushes alone do not apply the
+proxy fix. Review and replace `/opt/hrm/Caddyfile`, `/opt/hrm/compose.aws.yaml`,
+and the HRM Nginx site using this repository's updated versions. Keep backups
+and preserve unrelated sites. Validate `nginx -t` before reloading Nginx, and
+validate the Caddy configuration with the newly added environment setting:
+
+```sh
+cd /opt/hrm
+sudo docker compose --env-file .env --env-file images.env -f compose.aws.yaml config --quiet
+sudo docker compose --env-file .env --env-file images.env -f compose.aws.yaml run --rm --no-deps proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# Only after both validations pass:
+sudo nginx -t
+sudo systemctl reload nginx
+sudo docker compose --env-file .env --env-file images.env -f compose.aws.yaml up -d --no-deps --wait --wait-timeout 120 proxy
+```
+
+Deploy the backend and frontend changes, then verify a **new** attendance session
+shows a public internet IP while the connection IP remains an internal proxy
+address. Historical private addresses cannot be converted into the employee's
+public IP. Public IPs can be shared through NAT or belong to VPN exits; they do
+not establish physical location or uniquely identify an employee or device.
+
 ## Operations
 
 ```sh

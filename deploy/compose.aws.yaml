@@ -12,6 +12,8 @@ services:
     mem_limit: 96m
     environment:
       SITE_ADDRESS: ":80"
+      # This listener is published ONLY on host loopback behind host Nginx.
+      CADDY_TRUSTED_PROXIES: "private_ranges"
     ports: ["127.0.0.1:18080:80"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro

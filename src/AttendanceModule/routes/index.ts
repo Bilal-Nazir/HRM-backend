@@ -5,7 +5,13 @@ import {
 } from "../../AuthModule/utils/authMiddleware";
 import { asyncWrapper } from "../../node-base/utils";
 import AttendanceController from "../controllers/AttendanceController";
+import * as locationReview from "../controllers/LocationReviewController";
 const router = Router();
+router.get("/location-requests", authMiddleware(["attendance.read.self"]), requireOrganization, asyncWrapper(locationReview.listLocationRequests));
+router.post("/location-requests", authMiddleware(["attendance.checkin"]), requireOrganization, asyncWrapper(locationReview.createLocationRequest));
+router.patch("/location-requests/:requestId/cancel", authMiddleware(["attendance.checkin"]), requireOrganization, asyncWrapper(locationReview.cancelLocationRequest));
+router.patch("/location-requests/:requestId/review", authMiddleware(["organization.update"]), requireOrganization, asyncWrapper(locationReview.reviewLocationRequest));
+router.patch("/:attendanceId/location", authMiddleware(["organization.update"]), requireOrganization, asyncWrapper(locationReview.correctAttendanceLocation));
 router.get(
   "/schedule",
   authMiddleware(["organization.read"]),

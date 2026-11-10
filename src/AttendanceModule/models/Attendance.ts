@@ -2,6 +2,7 @@ import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
 import { AttendanceDevice } from "./AttendanceDevice";
+import { attendanceDeviceForAdmin } from "../utils/deviceInfo";
 const { getModelForClass } = TypeGoose;
 
 export class LocationPoint {
@@ -10,17 +11,25 @@ export class LocationPoint {
   @prop({ min: 0 }) public accuracyMeters?: number;
   @prop() public capturedAt!: Date;
   @prop() public address?: string;
+  @prop({ enum: ["browser", "admin"] }) public source?: string;
+  @prop() public enteredByUserId?: string;
+  @prop() public reason?: string;
+  @prop() public reviewRequestId?: string;
 }
+@index({ organizationId: 1, locationRequestId: 1 }, { unique: true, partialFilterExpression: { locationRequestId: { $type: "string" } } })
 @index({ organizationId: 1, employeeId: 1, workDate: -1 })
 @index({ organizationId: 1, employeeId: 1, status: 1 })
 export class AttendanceClass extends BaseModelClass<AttendanceClass> {
   @prop({ required: true }) public organizationId!: string;
   @prop({ required: true }) public employeeId!: string;
   @prop() public officeLocationId?: string;
+  @prop() public locationRequestId?: string;
   @prop({ required: true }) public workDate!: string;
   @prop({ required: true }) public checkInAt!: Date;
-  @prop({ _id: false, type: () => LocationPoint, required: true })
-  public checkInLocation!: LocationPoint;
+  @prop({ _id: false, type: () => LocationPoint })
+  public checkInLocation?: LocationPoint;
+  @prop({ enum: ["position_unavailable", "timeout"] }) public checkInLocationFailure?: string;
+  @prop({ enum: ["position_unavailable", "timeout"] }) public checkOutLocationFailure?: string;
   @prop() public checkOutAt?: Date;
   @prop({ _id: false, type: () => AttendanceDevice }) public checkInDevice?: AttendanceDevice;
   @prop({ _id: false, type: () => AttendanceDevice }) public checkOutDevice?: AttendanceDevice;
@@ -61,6 +70,8 @@ export class AttendanceClass extends BaseModelClass<AttendanceClass> {
         [constants.fields.Attendance.workDate]: this.workDate,
         [constants.fields.Attendance.checkInAt]: this.checkInAt,
         [constants.fields.Attendance.checkInLocation]: this.checkInLocation,
+        checkInLocationFailure: this.checkInLocationFailure,
+        checkOutLocationFailure: this.checkOutLocationFailure,
         [constants.fields.Attendance.checkOutAt]: this.checkOutAt,
         [constants.fields.Attendance.checkOutLocation]: this.checkOutLocation,
         [constants.fields.Attendance.status]: this.status,
@@ -81,7 +92,7 @@ export class AttendanceClass extends BaseModelClass<AttendanceClass> {
         [constants.fields.createdAt]: this.createdAt,
         [constants.fields.updatedAt]: this.updatedAt,
       };
-    if (includeDevice) data = { ...data, checkInDevice: this.checkInDevice, checkOutDevice: this.checkOutDevice };
+    if (includeDevice) data = { ...data, checkInDevice: attendanceDeviceForAdmin(this.checkInDevice), checkOutDevice: attendanceDeviceForAdmin(this.checkOutDevice) };
     data = { ...data, ...baseData };
     return this.display__includes_excludes({ data, reset, includes, excludes });
   }

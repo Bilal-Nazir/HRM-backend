@@ -1,3 +1,12 @@
+{
+    servers {
+        # Direct/public Caddy deployments trust loopback only. The AWS stack
+        # opts in to its host Nginx/Docker network via the environment below.
+        trusted_proxies static {$CADDY_TRUSTED_PROXIES:127.0.0.1/32}
+        trusted_proxies_strict
+    }
+}
+
 {$SITE_ADDRESS:http://localhost} {
     encode zstd gzip
     handle_path /api/* {

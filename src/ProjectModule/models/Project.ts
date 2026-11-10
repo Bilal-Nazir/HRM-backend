@@ -16,5 +16,7 @@ export class ProjectClass extends BaseModelClass<ProjectClass> {
   @prop({ enum: ["planned", "active", "on_hold", "completed", "archived"], default: "planned" }) status!: string;
   @prop({ required: true }) createdBy!: string;
   @prop({ default: 1 }) nextIssueNumber!: number;
+  @prop({ type: () => [Number], default: [] }) taskDurationOptionsMinutes!: number[];
+  @prop() autoCompleteStatusId?: string;
 }
 export default getModelForClass(ProjectClass, baseModelOptions);

@@ -1,6 +1,6 @@
 export const historyFieldLabels: Record<string, string> = {
   title: "Title", description: "Description", priority: "Priority", assigneeEmployeeIds: "Assignees",
-  parentStoryId: "Parent story", startDate: "Scheduled start", dueDate: "Due date", estimatedHours: "Estimated hours", labels: "Labels",
+  parentStoryId: "Parent story", startDate: "Scheduled start", dueDate: "Due date", estimatedHours: "Estimated hours", labels: "Labels", durationMinutes: "Task duration (minutes)",
 };
 
 export function sameHistoryValue(left: unknown, right: unknown): boolean {
@@ -22,7 +22,7 @@ export function taskHistoryChanges(entry: { action: string; changes?: Record<str
     if (value instanceof Date) return value.toISOString();
     return Array.isArray(value) ? value.join(", ") : String(value);
   };
-  if (entry.action === "task.status_changed") return [{ field: "status", label: "Status", before: String(changes.from || statuses.get(changes.fromStatusId) || "Unknown status"), after: String(changes.to || statuses.get(changes.toStatusId) || "Unknown status") }];
+  if (["task.status_changed", "task.auto_completed"].includes(entry.action)) return [{ field: "status", label: "Status", before: String(changes.from || statuses.get(changes.fromStatusId) || "Unknown status"), after: String(changes.to || statuses.get(changes.toStatusId) || "Unknown status") + (entry.action === "task.auto_completed" ? " (Auto done)" : "") }];
   if (entry.action === "task.updated") return Object.keys(changes.after || {}).filter((field) => !sameHistoryValue(changes.before?.[field], changes.after[field])).map((field) => ({ field, label: historyFieldLabels[field] || field, before: display(field, changes.before?.[field]), after: display(field, changes.after[field]) }));
   return [];
 }

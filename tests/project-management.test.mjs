@@ -44,7 +44,8 @@ test("project management permissions, assignments, transitions and tenant isolat
     assert.equal((await request("/projects",member,"POST",{name:"No",key:"NO",managerEmployeeId:member.employee.id})).status,403);
     assert.equal((await request(`/projects/${projectId}/members`,admin,"POST",{members:[{employeeId:member.employee.id,role:"member"},{employeeId:second.employee.id,role:"member"}]})).status,200);
     const workflow=(await request(`/projects/${projectId}/workflow`,member)).body.data.workflow;const backlog=workflow.find(x=>x.isDefault),progress=workflow.find(x=>x.category==="in_progress"),done=workflow.find(x=>x.category==="done");
-    const taskResult=await request(`/projects/${projectId}/tasks`,member,"POST",{title:"Implement attendance API",assigneeEmployeeIds:[member.employee.id,second.employee.id]});assert.equal(taskResult.status,201);const task=taskResult.body.data.task;assert.equal(task.assigneeEmployeeIds.length,2);
+    assert.equal((await request(`/projects/${projectId}/workflow/durations`,admin,"PATCH",{taskDurationOptionsMinutes:[30,60],autoCompleteStatusId:done.id})).status,200);
+    const taskResult=await request(`/projects/${projectId}/tasks`,member,"POST",{title:"Implement attendance API",durationMinutes:30,assigneeEmployeeIds:[member.employee.id,second.employee.id]});assert.equal(taskResult.status,201);const task=taskResult.body.data.task;assert.equal(task.assigneeEmployeeIds.length,2);
     assert.equal((await request(`/projects/${projectId}/tasks`,member,"POST",{title:"Bad assignment",assigneeEmployeeIds:[outsider.employee.id]})).status,422);
     assert.equal((await request(`/projects/${projectId}/tasks/${task.id}/status`,member,"PATCH",{workflowStatusId:done.id})).status,409);
     assert.equal((await request(`/projects/${projectId}/tasks/${task.id}/status`,member,"PATCH",{workflowStatusId:progress.id})).status,200);

@@ -29,11 +29,12 @@ import TaskTimeSessionModel from "../../ProjectModule/models/TaskTimeSession";
 import { isValidObjectId } from "mongoose";
 import { dailyTaskActivity, nextReportDay, reportDay, reportMidnight } from "../utils/taskActivityReport";
 import { pauseEmployeeTimersAtCheckout } from "../../ProjectModule/services/checkoutTimerService";
-import { attendanceDeviceInfo } from "../utils/deviceInfo";
+import { attendanceDeviceForAdmin, attendanceDeviceInfo } from "../utils/deviceInfo";
 
 const attendanceMetrics = (record: AttendanceClass, schedule?: { timezone: string; weeklyPattern: { day: number; startTime: string; endTime: string; working: boolean }[] }) => {
   const hours = record.checkOutAt ? Math.max(0, (new Date(record.checkOutAt).getTime() - new Date(record.checkInAt).getTime()) / 3600000) : 0;
   const flags: string[] = [];
+  if (!record.checkInLocation || record.checkOutAt && !record.checkOutLocation) flags.push("location_unavailable");
   if (record.checkInWithinGeofence === false || record.checkOutWithinGeofence === false) flags.push("outside_office_area");
   if (schedule) {
     const parts = new Intl.DateTimeFormat("en-GB", { timeZone: schedule.timezone, weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(record.checkInAt));
@@ -114,7 +115,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
         this.dbCountDocs({ readFilter: openFilter, baseFilter: false }),
         EmployeeModel.countDocuments({ ...scope, employmentStatus: "active" }),
         this.dbCountDocs({
-          readFilter: { ...openFilter, checkInWithinGeofence: false },
+          readFilter: { ...openFilter, $or: [{ checkInWithinGeofence: false }, { checkInLocation: null }] },
           baseFilter: false,
         }),
       ]);
@@ -213,8 +214,8 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     const taskMap = new Map(relatedTasks.map((task: any) => [String(task._id), { id: String(task._id), title: task.title, key: task.key, projectId: String(task.projectId) }]));
     const statusMap = new Map(statuses.map((status: any) => [String(status._id), { name: status.name, category: status.category }]));
     const now = new Date();
-    const location = (point: any) => point ? { latitude: point.latitude, longitude: point.longitude, accuracyMeters: point.accuracyMeters, address: point.address } : null;
-    const attendanceRows = attendance.map((record: any) => ({ id: String(record._id), workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: location(record.checkInLocation), checkOutLocation: location(record.checkOutLocation), checkInDevice: record.checkInDevice, checkOutDevice: record.checkOutDevice, checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, status: record.status, ...attendanceMetrics(record, schedules.get(employeeId)) }));
+    const location = (point: any) => point ? { latitude: point.latitude, longitude: point.longitude, accuracyMeters: point.accuracyMeters, address: point.address, source: point.source, reason: point.reason, capturedAt: point.capturedAt } : null;
+    const attendanceRows = attendance.map((record: any) => ({ id: String(record._id), workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: location(record.checkInLocation), checkOutLocation: location(record.checkOutLocation), checkInDevice: attendanceDeviceForAdmin(record.checkInDevice), checkOutDevice: attendanceDeviceForAdmin(record.checkOutDevice), checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, status: record.status, ...attendanceMetrics(record, schedules.get(employeeId)) }));
     const totalAttendanceHours = attendanceRows.reduce((sum, record) => sum + record.workedHours, 0);
     const timerRows = timerSessions.map((session: any) => { const durationSeconds = session.endedAt ? session.durationSeconds || Math.max(0, Math.floor((new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime()) / 1000)) : Math.max(0, Math.floor((now.getTime() - new Date(session.startedAt).getTime()) / 1000)); return { id: String(session._id), taskId: String(session.taskId), projectId: String(session.projectId), startedAt: session.startedAt, endedAt: session.endedAt, durationSeconds, stopReason: session.stopReason, running: !session.endedAt }; });
     const taskDays = dailyTaskActivity(timerRows, projectActivity, from, to, timeZone, now).map((day) => ({ ...day, tasks: day.tasks.map((row) => ({ ...row, task: taskMap.get(row.taskId) || null, project: projectMap.get(taskMap.get(row.taskId)?.projectId || "") || null })) }));
@@ -245,7 +246,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     const records = await AttendanceModel.find({ organizationId, ...(!isAdmin ? { employeeId: req.auth!.employeeId } : requestedEmployeeId ? { employeeId: requestedEmployeeId } : {}), isDeleted: { $ne: true }, workDate: { $gte: from, $lte: to } }).sort({ workDate: -1 }).limit(5000);
     const employeeSchedule = await this.scheduleLookup(organizationId, [...new Set(records.map((record) => record.employeeId))]);
     const buckets = { atLeastEightHours: 0, fiveToUnderEightHours: 0, underFiveHours: 0 };
-    const flagCounts = { lateCheckIns: 0, earlyCheckOuts: 0, outsideOfficeArea: 0 };
+    const flagCounts = { lateCheckIns: 0, earlyCheckOuts: 0, outsideOfficeArea: 0, locationUnavailable: 0 };
     let totalWorkedHours = 0;
     const daily = records.map((record) => {
       const metrics = attendanceMetrics(record, employeeSchedule.get(record.employeeId));
@@ -258,12 +259,16 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       if (metrics.flags.includes("late_check_in")) flagCounts.lateCheckIns++;
       if (metrics.flags.includes("early_check_out")) flagCounts.earlyCheckOuts++;
       if (metrics.flags.includes("outside_office_area")) flagCounts.outsideOfficeArea++;
-      return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: record.checkInLocation, checkOutLocation: record.checkOutLocation, ...(isAdmin ? { checkInDevice: record.checkInDevice, checkOutDevice: record.checkOutDevice } : {}), checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, ...metrics };
+      if (metrics.flags.includes("location_unavailable")) flagCounts.locationUnavailable++;
+      return { id: record.id, employeeId: record.employeeId, workDate: record.workDate, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt, checkInLocation: record.checkInLocation, checkOutLocation: record.checkOutLocation, ...(isAdmin ? { checkInDevice: attendanceDeviceForAdmin(record.checkInDevice), checkOutDevice: attendanceDeviceForAdmin(record.checkOutDevice) } : {}), checkInWithinGeofence: record.checkInWithinGeofence, checkOutWithinGeofence: record.checkOutWithinGeofence, ...metrics };
     });
     return sendResponseObject({ res, data: { totalWorkingDays: new Set(records.map((record) => `${record.employeeId}:${record.workDate}`)).size, totalWorkedHours: Math.round(totalWorkedHours * 100) / 100, buckets, flags: flagCounts, daily: daily.slice(0, 2000) } });
   };
 
   private getLocationData = (data: Record<string, any>) => {
+    if (data.latitude === undefined || data.longitude === undefined) {
+      throw new ValidationException("Location is required to record attendance");
+    }
     const latitude = Number(data.latitude);
     const longitude = Number(data.longitude);
 
@@ -278,13 +283,14 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       );
     }
 
-    return {
+    return { failure: undefined, location: {
       latitude,
       longitude,
       accuracyMeters: data.accuracyMeters,
       address: data.address,
-      capturedAt: new Date(),
-    };
+      capturedAt: data.locationCapturedAt ? new Date(data.locationCapturedAt) : new Date(),
+      source: "browser" as const,
+    } };
   };
 
   private getOfficeDistance = async ({
@@ -295,8 +301,8 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
   }: {
     organizationId: string;
     officeLocationId?: string;
-    latitude: number;
-    longitude: number;
+    latitude?: number;
+    longitude?: number;
   }) => {
     if (!officeLocationId) {
       return {
@@ -319,7 +325,8 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     if (
       !office ||
       office.latitude === undefined ||
-      office.longitude === undefined
+      office.longitude === undefined ||
+      latitude === undefined || longitude === undefined
     ) {
       return {
         office,
@@ -369,6 +376,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
           { rule: "minValue", value: 0 },
         ],
         address: [{ rule: "datatype", datatype: "String" }],
+        locationCapturedAt: [{ rule: "format", type: "datetime" }],
         [constants.fields.Attendance.officeLocationId]: [
           { rule: "format", type: "id" },
         ],
@@ -380,7 +388,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
 
     if (!isValid) return next(errorMessages);
 
-    const location = this.getLocationData(postData);
+    const { location, failure } = this.getLocationData(postData);
 
     const openAttendance = await this.dbReadRecord({
       readFilter: {
@@ -418,8 +426,8 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     const officeData = await this.getOfficeDistance({
       organizationId,
       officeLocationId,
-      latitude: location.latitude,
-      longitude: location.longitude,
+      latitude: location?.latitude,
+      longitude: location?.longitude,
     });
 
     const obj = await this.dbInsertRecord({
@@ -430,10 +438,11 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
         workDate: new Date().toISOString().slice(0, 10),
         checkInAt: new Date(),
         checkInLocation: location,
+        checkInLocationFailure: failure,
         checkInDevice: attendanceDeviceInfo(req),
         checkInDistanceMeters: officeData.distance,
         checkInWithinGeofence: officeData.withinGeofence,
-        status: officeData.withinGeofence === false ? "flagged" : "open",
+        status: !location || officeData.withinGeofence === false ? "flagged" : "open",
         notes: postData.notes,
       },
     });
@@ -483,12 +492,13 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
           { rule: "minValue", value: 0 },
         ],
         address: [{ rule: "datatype", datatype: "String" }],
+        locationCapturedAt: [{ rule: "format", type: "datetime" }],
       },
     });
 
     if (!isValid) return next(errorMessages);
 
-    const location = this.getLocationData(postData);
+    const { location, failure } = this.getLocationData(postData);
 
     const obj = await this.dbReadRecord({
       readFilter: {
@@ -510,8 +520,8 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
     const officeData = await this.getOfficeDistance({
       organizationId,
       officeLocationId: obj.officeLocationId,
-      latitude: location.latitude,
-      longitude: location.longitude,
+      latitude: location?.latitude,
+      longitude: location?.longitude,
     });
 
     const checkOutAt = new Date();
@@ -523,10 +533,11 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
         checkOutAt,
         checkOutDevice: attendanceDeviceInfo(req, checkOutAt),
         checkOutLocation: location,
+        checkOutLocationFailure: failure,
         checkOutDistanceMeters: officeData.distance,
         checkOutWithinGeofence: officeData.withinGeofence,
         status:
-          obj.checkInWithinGeofence === false ||
+          !obj.checkInLocation || !location || obj.checkInWithinGeofence === false ||
           officeData.withinGeofence === false
             ? "flagged"
             : "completed",

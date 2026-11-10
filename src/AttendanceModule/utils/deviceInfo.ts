@@ -1,9 +1,34 @@
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import type { Request } from "express";
 
 const text = (value: unknown, max = 100): string | undefined => typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, max) || undefined : undefined;
 const number = (value: unknown, max: number): number | undefined => typeof value === "number" && Number.isFinite(value) && value > 0 && value <= max ? value : undefined;
 const ip = (value: unknown) => { const clean = text(value); return clean && isIP(clean) ? clean : undefined; };
+
+const nonPublic = new BlockList();
+for (const [address, prefix] of [["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4]] as const) nonPublic.addSubnet(address, prefix, "ipv4");
+const globalV6 = new BlockList();
+globalV6.addSubnet("2000::", 3, "ipv6");
+nonPublic.addSubnet("2001::", 23, "ipv6");
+nonPublic.addSubnet("2001:db8::", 32, "ipv6");
+nonPublic.addSubnet("2002::", 16, "ipv6");
+nonPublic.addSubnet("3fff::", 20, "ipv6");
+
+export function publicInternetIp(value: unknown): string | undefined {
+  const address = ip(value);
+  if (!address) return undefined;
+  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)?.[1];
+  if (mapped) return publicInternetIp(mapped);
+  const family = isIP(address) === 4 ? "ipv4" : "ipv6";
+  return !nonPublic.check(address, family) && (family === "ipv4" || globalV6.check(address, family)) ? address : undefined;
+}
+
+// Derive the public field for older snapshots as well, without rewriting history.
+export function attendanceDeviceForAdmin(device: any) {
+  if (!device) return undefined;
+  const value = typeof device.toObject === "function" ? device.toObject() : device;
+  return { ...value, publicIpAddress: publicInternetIp(value.ipAddress) };
+}
 
 // Headers and client hints describe the request, not a verified hardware identity.
 // Never accept network addresses, hardware identifiers or capture times from the body.
@@ -27,7 +52,7 @@ export function attendanceDeviceInfo(req: Pick<Request, "headers" | "ip" | "sock
   const platformVersion = text(client.platformVersion, 60);
   return {
     capturedAt: at, deviceType, browser: browserMatch?.name || "Unknown", browserVersion: browserMatch?.match?.[1], os, osVersion,
-    userAgent: ua || undefined, ipAddress: ip(req.ip), connectionIp: ip(req.socket?.remoteAddress),
+    userAgent: ua || undefined, ipAddress: ip(req.ip), publicIpAddress: publicInternetIp(req.ip), connectionIp: ip(req.socket?.remoteAddress),
     platform, platformVersion, model: text(client.model), architecture: text(client.architecture, 30), bitness: ["32", "64"].includes(client.bitness) ? client.bitness : undefined,
     timezone: text(client.timezone, 100), language: text(client.language, 35),
     screenWidth: number(client.screenWidth, 32768), screenHeight: number(client.screenHeight, 32768),

@@ -9,6 +9,7 @@ export class AttendanceDevice {
   @prop() osVersion?: string;
   @prop() userAgent?: string;
   @prop() ipAddress?: string;
+  @prop() publicIpAddress?: string;
   @prop() connectionIp?: string;
   @prop() platform?: string;
   @prop() platformVersion?: string;

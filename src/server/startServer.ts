@@ -11,10 +11,12 @@ import {
 import { createDefaultLeaveTypesScript } from "../database/scripts/createDefaultLeaveTypesScript";
 import { logger, sendResponseObject } from "../node-base/utils";
 import { startTaskReminderWorker } from "../ProjectModule/services/taskReminderService";
+import { trustProxyRanges } from "./proxyTrust";
+import { startTaskDurationWorker } from "../ProjectModule/services/taskDurationService";
 
 const startServer = async () => {
   const app: Express = express();
-  app.set("trust proxy", true);
+  app.set("trust proxy", trustProxyRanges());
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json({ limit: "12mb" }));
 
@@ -46,9 +48,11 @@ const startServer = async () => {
     logger.info(`HRM backend listening on port ${config.server.port}`);
   });
   const taskReminderTimer = startTaskReminderWorker();
+  const taskDurationTimer = startTaskDurationWorker();
 
   const shutdown = async () => {
     clearInterval(taskReminderTimer);
+    clearInterval(taskDurationTimer);
     server.close(async () => {
       await Promise.all([MongoDatabase.close(), RedisDatabase.close()]);
       process.exit(0);

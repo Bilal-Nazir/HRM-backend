@@ -7,6 +7,8 @@ const { getModelForClass } = TypeGoose;
 @index({ organizationId: 1, assigneeEmployeeIds: 1, updatedAt: -1 })
 @index({ organizationId: 1, projectId: 1, title: "text", key: "text", labels: "text" })
 @index({ reminder24hSentAt: 1, dueDate: 1 })
+@index({ autoCompleteAt: 1, isDeleted: 1 })
+@index({ autoCompletionPending: 1 })
 export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop({ required: true }) organizationId!: string;
   @prop({ required: true }) projectId!: string;
@@ -30,5 +32,14 @@ export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop() timeStartedAt?: Date;
   @prop() timeStoppedAt?: Date;
   @prop({ default: 0, min: 0 }) accumulatedSeconds!: number;
+  @prop({ min: 1 }) durationMinutes?: number;
+  @prop() autoCompleteAt?: Date;
+  @prop({ enum: ["manual", "auto"] }) completionMethod?: string;
+  @prop() completedAt?: Date;
+  // Persist settlement data so a process restart cannot lose the work log/history.
+  @prop() autoCompletionId?: string;
+  @prop() autoCompletionStartedAt?: Date;
+  @prop() autoCompletionFromStatusId?: string;
+  @prop() autoCompletionPending?: boolean;
 }
 export default getModelForClass(ProjectTaskClass, baseModelOptions);

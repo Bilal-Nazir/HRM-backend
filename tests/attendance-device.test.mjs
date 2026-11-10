@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const compile = (path) => ts.transpileModule(readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, experimentalDecorators: true, esModuleInterop: true } }).outputText;
 const utilScope = { exports: {}, Date, require };
 runInNewContext(compile("AttendanceModule/utils/deviceInfo.ts"), utilScope);
-const { attendanceDeviceInfo } = utilScope.exports;
+const { attendanceDeviceInfo, publicInternetIp, attendanceDeviceForAdmin } = utilScope.exports;
 const req = (ua, device = {}) => ({ headers: { "user-agent": ua }, ip: "203.0.113.8", socket: { remoteAddress: "::ffff:127.0.0.1" }, body: { device } });
 const chromeMac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
@@ -38,6 +38,23 @@ test("metadata cannot overwrite server addresses, timestamps or add fabricated h
   assert.equal(info.screenWidth, undefined); assert.equal(info.viewportHeight, undefined); assert.equal(info.memoryGB, undefined); assert.equal(info.touchPoints, undefined); assert.equal(info.bitness, undefined);
   assert.equal(info.platform.length, 60); assert.equal(info.timezone, "badvalue");
   assert.equal(attendanceDeviceInfo({ ...req(undefined), body: {} }).deviceType, "unknown");
+});
+
+test("public internet IP excludes container, local, carrier NAT, reserved and invalid addresses", () => {
+  for (const value of ["172.18.0.1", "172.18.0.4", "192.168.1.2", "10.0.0.4", "127.0.0.1", "100.64.1.2", "169.254.1.2", "::1", "fc00::1", "fe80::1", "::ffff:172.18.0.1", "2001:db8::1", "bad", "8.8.8.8, 1.1.1.1"]) assert.equal(publicInternetIp(value), undefined, value);
+  assert.equal(publicInternetIp("8.8.8.8"), "8.8.8.8");
+  assert.equal(publicInternetIp("::ffff:8.8.8.8"), "8.8.8.8");
+  assert.equal(publicInternetIp("2606:4700:4700::1111"), "2606:4700:4700::1111");
+  const info = attendanceDeviceInfo({ ...req(chromeMac, { publicIpAddress: "1.1.1.1" }), ip: "8.8.8.8" });
+  assert.equal(info.publicIpAddress, "8.8.8.8");
+});
+
+test("historical public request addresses are displayed without inventing IPs for private-only snapshots", () => {
+  const original = { ipAddress: "8.8.8.8" };
+  assert.equal(attendanceDeviceForAdmin(original).publicIpAddress, "8.8.8.8");
+  assert.equal(original.publicIpAddress, undefined);
+  assert.equal(attendanceDeviceForAdmin({ ipAddress: "172.18.0.1", publicIpAddress: "1.1.1.1" }).publicIpAddress, undefined);
+  assert.equal(attendanceDeviceForAdmin(undefined), undefined);
 });
 
 function controller() {
@@ -83,6 +100,7 @@ test("device snapshots require an explicit admin serializer option", async () =>
     if (path === "@typegoose/typegoose") return { __esModule: true, default: { getModelForClass: () => ({}) }, prop: noop, index: noop };
     if (path.endsWith("/baseClasses")) return { BaseModelClass: Base, baseModelOptions: {} };
     if (path.endsWith("/constants")) return { constants: { fields: { ...Object.fromEntries(["id", "createdAt", "updatedAt"].map((key) => [key, key])), Attendance: fields } } };
+    if (path.endsWith("/deviceInfo")) return utilScope.exports;
     return {};
   } };
   runInNewContext(compile("AttendanceModule/models/Attendance.ts"), scope);

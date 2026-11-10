@@ -38,7 +38,7 @@ export async function readTaskDetails({ organizationId, task, project, canEdit, 
   const employeeMap = new Map(people.map((person: any) => [String(person._id), { id: String(person._id), employeeId: String(person._id), name: `${person.firstName} ${person.lastName}`.trim(), employeeCode: person.employeeCode, jobTitle: person.jobTitle }]));
   const employeeByUser = new Map(people.filter((person) => person.userId).map((person: any) => [person.userId, employeeMap.get(String(person._id))!]));
   const userMap = new Map(users.map((user: any) => [String(user._id), { id: String(user._id), name: user.loginId }]));
-  const personFor = (employeeId?: string, userId?: string) => employeeMap.get(employeeId || "") || employeeByUser.get(userId || "") || userMap.get(userId || "") || { id: "unknown", name: "Unknown user" };
+  const personFor = (employeeId?: string, userId?: string) => userId === "system" ? { id: "system", name: "System" } : employeeMap.get(employeeId || "") || employeeByUser.get(userId || "") || userMap.get(userId || "") || { id: "unknown", name: "Unknown user" };
   const names = new Map([...employeeMap].map(([id, person]) => [id, person.name]));
   const statusNames = new Map(statuses.map((status: any) => [String(status._id), status.name]));
   const parentNames = new Map(parents.map((parent: any) => [String(parent._id), `${parent.key}: ${parent.title}`]));
@@ -48,7 +48,7 @@ export async function readTaskDetails({ organizationId, task, project, canEdit, 
   const trackedSeconds = (task.accumulatedSeconds || 0) + (task.timeStartedAt ? Math.max(0, Math.floor((+now - +new Date(task.timeStartedAt)) / 1000)) : 0);
   return {
     task: enrichedTask,
-    project: { id: project.id, name: project.name, key: project.key, status: project.status },
+    project: { id: project.id, name: project.name, key: project.key, status: project.status, taskDurationOptionsMinutes: project.taskDurationOptionsMinutes || [], autoCompleteStatusId: project.autoCompleteStatusId },
     permissions: { canEdit },
     workflow: statuses.filter((status) => !status.isArchived && !status.isDeleted).map(serialize),
     children: children.map(serialize),
