@@ -1,7 +1,7 @@
 import ProjectTaskModel from "../models/ProjectTask";
 import TaskTimeSessionModel from "../models/TaskTimeSession";
 import ProjectActivityModel from "../models/ProjectActivity";
-import { completeTimedTaskIfDue } from "./taskDurationService";
+import { pauseTimedTaskIfDue } from "./taskDurationService";
 
 type Checkout = { organizationId: string; employeeId: string; userId: string; at: Date };
 
@@ -22,7 +22,7 @@ export async function pauseEmployeeTimersAtCheckout({ organizationId, employeeId
     const owner = taskSessions.find((session) => +new Date(session.startedAt) === +startedAt) || taskSessions[0];
     if (owner?.employeeId && owner.employeeId !== employeeId) continue;
     if (!owner?.employeeId && !task.assigneeEmployeeIds.includes(employeeId)) continue;
-    if (task.durationMinutes && await completeTimedTaskIfDue(task, at)) continue;
+    if (task.durationMinutes && await pauseTimedTaskIfDue(task, at)) continue;
     const seconds = Math.max(0, Math.floor((at.getTime() - startedAt.getTime()) / 1000));
     // Compare the running interval so a retry cannot add elapsed time twice.
     const updated = await ProjectTaskModel.findOneAndUpdate(

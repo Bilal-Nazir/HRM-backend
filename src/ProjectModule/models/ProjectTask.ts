@@ -9,6 +9,7 @@ const { getModelForClass } = TypeGoose;
 @index({ reminder24hSentAt: 1, dueDate: 1 })
 @index({ autoCompleteAt: 1, isDeleted: 1 })
 @index({ autoCompletionPending: 1 })
+@index({ autoPausePending: 1 })
 export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop({ required: true }) organizationId!: string;
   @prop({ required: true }) projectId!: string;
@@ -41,5 +42,13 @@ export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   @prop() autoCompletionStartedAt?: Date;
   @prop() autoCompletionFromStatusId?: string;
   @prop() autoCompletionPending?: boolean;
+  @prop() autoPaused?: boolean;
+  @prop() autoPausedAt?: Date;
+  @prop() durationExtensionRequired?: boolean;
+  @prop() autoPauseId?: string;
+  @prop() autoPauseStartedAt?: Date;
+  @prop() autoPauseFromStatusId?: string;
+  @prop() autoPauseStatusId?: string;
+  @prop() autoPausePending?: boolean;
 }
 export default getModelForClass(ProjectTaskClass, baseModelOptions);

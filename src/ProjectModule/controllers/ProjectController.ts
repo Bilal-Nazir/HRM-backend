@@ -18,7 +18,9 @@ import path from "node:path";
 import { notifyEmployees, projectManagerEmployeeIds } from "../../NotificationModule/services/notificationService";
 import { readTaskDetails } from "../services/taskDetailService";
 import { sameHistoryValue } from "../services/taskHistory";
-import { completeTimedTaskIfDue, durationChoice, durationDeadline, settleAutoCompletion } from "../services/taskDurationService";
+import { pauseTimedTaskIfDue, durationChoice, durationDeadline, settleAutoCompletion, settleAutoPause } from "../services/taskDurationService";
+
+import { ensurePauseStatus } from "../services/pauseWorkflowService";
 
 const object = (value: unknown, label = "ID") => {
   if (typeof value !== "string" || !isValidObjectId(value)) throw new ValidationException(`Invalid ${label}`);
@@ -50,7 +52,7 @@ const notifyProject = async (req: AuthenticatedRequest, project: any, task: any,
   await notifyEmployees({ organizationId: req.auth!.organizationId!, employeeIds: [...employeeIds, ...managers], actorUserId: req.auth!.userId, actorEmployeeId: req.auth!.employeeId, type, title, message, href: task?.id ? `/projects/${project.id}/tasks/${task.id}${type.includes("comment") ? "?activity=comments" : ""}` : `/projects/${project.id}/board`, projectId: project.id, taskId: task?.id });
 };
 const timerActionFor = (status: any): "none" | "start" | "stop" => {
-  if (status?.category === "done") return "stop";
+  if (status?.category === "done" || status?.category === "paused" || status?.systemKey === "pause") return "stop";
   if (["none", "start", "stop"].includes(status?.timerAction)) return status.timerAction;
   // Preserve the original behaviour for workflow columns created before
   // timerAction existed. Saving the column makes the choice explicit.
@@ -70,17 +72,18 @@ async function visibleTask(req: AuthenticatedRequest, projectId: string, taskId:
   const task = await ProjectTaskModel.findOne({ _id: object(taskId, "task ID"), organizationId: req.auth!.organizationId, projectId, isDeleted: { $ne: true } });
   if (!task) throw new ObjectNotFoundException("Task");
   if (task.autoCompletionPending) await settleAutoCompletion(task);
+  if (task.autoPausePending) await settleAutoPause(task);
   return task;
 }
 
 // Compete atomically with the background deadline worker. A stale pause/move
-// must never resurrect a timer or overwrite an automatic completion.
+// must never resurrect a timer or overwrite an automatic pause.
 async function saveTaskClock(task: any, before: any) {
   if (!before.durationMinutes && !task.durationMinutes) { await task.save(); return; }
-  const fields = ["workflowStatusId", "timeStartedAt", "timeStoppedAt", "accumulatedSeconds", "autoCompleteAt", "completionMethod", "completedAt"];
+  const fields = ["workflowStatusId", "timeStartedAt", "timeStoppedAt", "accumulatedSeconds", "autoCompleteAt", "completionMethod", "completedAt", "autoPaused", "durationExtensionRequired"];
   const set: any = {}, unset: any = {};
   for (const key of fields) { if (task[key] === undefined) unset[key] = 1; else set[key] = task[key]; }
-  const updated = await ProjectTaskModel.findOneAndUpdate({ _id: task.id, organizationId: task.organizationId, isDeleted: { $ne: true }, workflowStatusId: before.workflowStatusId, timeStartedAt: before.timeStartedAt || { $exists: false }, durationMinutes: before.durationMinutes || { $exists: false }, accumulatedSeconds: before.accumulatedSeconds || 0 }, { $set: set, $unset: unset }, { new: true });
+  const updated = await ProjectTaskModel.findOneAndUpdate({ _id: task.id, organizationId: task.organizationId, isDeleted: { $ne: true }, workflowStatusId: before.workflowStatusId, timeStartedAt: before.timeStartedAt || { $exists: false }, durationMinutes: before.durationMinutes || { $exists: false }, accumulatedSeconds: before.accumulatedSeconds || 0, autoPaused: before.autoPaused ? true : { $ne: true }, durationExtensionRequired: before.durationExtensionRequired ? true : { $ne: true } }, { $set: set, $unset: unset }, { new: true });
   if (!updated) throw new ConflictException("The task timer changed. Refresh the task and try again.");
   Object.assign(task, updated.toObject());
 }
@@ -98,6 +101,7 @@ async function projectAccess(req: AuthenticatedRequest, projectId: string, write
     if (write && member.role === "viewer") throw new ForbiddenException("Viewers cannot modify projects");
   }
   if (write && project.status === "archived") throw new ConflictException("Archived projects are read-only until restored");
+  await ensurePauseStatus(project);
   return { project, member };
 }
 
@@ -201,12 +205,15 @@ export const createProject = async (req: AuthenticatedRequest, res: Response) =>
     WorkflowStatusModel.insertMany([
       { organizationId, projectId: project.id, name: "Backlog", order: 0, category: "todo", color: "#7c8b84", isDefault: true, timerAction: "none" },
       { organizationId, projectId: project.id, name: "In Progress", order: 1, category: "in_progress", color: "#3b8ff3", timerAction: "start" },
-      { organizationId, projectId: project.id, name: "Done", order: 2, category: "done", color: "#149b7b", timerAction: "stop" },
+      { organizationId, projectId: project.id, name: "Pause", order: 2, category: "paused", systemKey: "pause", color: "#d99b32", timerAction: "stop" },
+      { organizationId, projectId: project.id, name: "Done", order: 3, category: "done", color: "#149b7b", timerAction: "stop" },
     ]),
   ]);
   const statuses = await WorkflowStatusModel.find({ projectId: project.id }).sort({ order: 1 });
   for (let i = 0; i < statuses.length; i++) statuses[i].allowedTransitionIds = statuses.filter((_, j) => Math.abs(i - j) === 1).map((status) => status.id);
   await Promise.all(statuses.map((status) => status.save()));
+  project.pauseStatusId = statuses.find((status) => status.systemKey === "pause")?.id;
+  await project.save();
   await activity(req, project.id, "project.created", undefined, { name, key });
   return sendResponseObject({ res, code: 201, data: { project: serialize(project) } });
 };
@@ -307,12 +314,9 @@ export const updateDurationSettings = async (req: AuthenticatedRequest, res: Res
   const values = req.body.taskDurationOptionsMinutes;
   if (!Array.isArray(values) || values.length < 1 || values.length > 50 || values.some((value: unknown) => typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 525600)) throw new ValidationException("Provide at least one and up to 50 durations, from 1 minute to 365 days");
   const options = [...new Set<number>(values)].sort((a, b) => a - b);
-  const targetId = req.body.autoCompleteStatusId ? object(req.body.autoCompleteStatusId, "completion column ID") : undefined;
-  if (!targetId) throw new ValidationException("Choose the completion column for timed tasks");
-  if (targetId && !await WorkflowStatusModel.exists({ _id: targetId, organizationId: req.auth!.organizationId, projectId: project.id, category: "done", isArchived: false, isDeleted: { $ne: true } })) throw new ValidationException("Choose an active Done-category column in this project");
-  const before = { taskDurationOptionsMinutes: project.taskDurationOptionsMinutes, autoCompleteStatusId: project.autoCompleteStatusId };
-  project.taskDurationOptionsMinutes = options; project.autoCompleteStatusId = targetId; await project.save();
-  await activity(req, project.id, "workflow.duration_settings_updated", undefined, { before, after: { taskDurationOptionsMinutes: options, autoCompleteStatusId: targetId } });
+  const before = { taskDurationOptionsMinutes: project.taskDurationOptionsMinutes };
+  project.taskDurationOptionsMinutes = options; await project.save();
+  await activity(req, project.id, "workflow.duration_settings_updated", undefined, { before, after: { taskDurationOptionsMinutes: options, pauseStatusId: project.pauseStatusId } });
   return sendResponseObject({ res, data: { project: serialize(project) } });
 };
 
@@ -330,7 +334,7 @@ export const updateStatus = async (req: AuthenticatedRequest, res: Response) => 
   const { project } = await projectAccess(req, param(req, "id"), true, true);
   const status = await WorkflowStatusModel.findOne({ _id: object(param(req, "statusId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
   if (!status) throw new ObjectNotFoundException("Workflow column");
-  if (project.autoCompleteStatusId === status.id && (req.body.isArchived === true || req.body.category !== undefined && req.body.category !== "done")) throw new ConflictException("Choose another timed-task completion column before changing this column");
+  if (status.systemKey === "pause" && (req.body.isArchived !== undefined && req.body.isArchived !== false || req.body.isDefault !== undefined && req.body.isDefault !== false || req.body.name !== undefined && req.body.name !== "Pause" || req.body.category !== undefined && req.body.category !== "paused" || req.body.timerAction !== undefined && req.body.timerAction !== "stop")) throw new ConflictException("The default Pause column must remain available and stop task timers");
   for (const field of ["name", "category", "color", "isArchived", "moveRoles"] as const) if (req.body[field] !== undefined) (status as any)[field] = field === "name" ? clean(req.body[field], "Column name", 60) : req.body[field];
   if (req.body.timerAction !== undefined) {
     if (!["none", "start", "stop"].includes(req.body.timerAction)) throw new ValidationException("Invalid timer behavior");
@@ -356,7 +360,7 @@ export const deleteStatus = async (req: AuthenticatedRequest, res: Response) => 
   const { project } = await projectAccess(req, param(req, "id"), true, true);
   const status = await WorkflowStatusModel.findOne({ _id: object(param(req, "statusId")), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: { $ne: true } });
   if (!status) throw new ObjectNotFoundException("Workflow column");
-  if (project.autoCompleteStatusId === status.id) throw new ConflictException("Choose another timed-task completion column before archiving this column");
+  if (status.systemKey === "pause") throw new ConflictException("The default Pause column cannot be archived");
   if (status.isDefault) throw new ConflictException("Set another default column before removing this one");
   const count = await ProjectTaskModel.countDocuments({ organizationId: req.auth!.organizationId, projectId: req.params.id, workflowStatusId: status.id, isDeleted: { $ne: true } });
   if (count) {
@@ -433,24 +437,26 @@ export const getTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project, member } = await projectAccess(req, param(req, "id"));
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
   const page = (value: unknown) => Math.max(1, Math.min(100000, Math.floor(Number(value) || 1)));
-  const data = await readTaskDetails({ organizationId: req.auth!.organizationId!, task, project, canEdit: project.status !== "archived" && (isAdmin(req) || member?.role !== "viewer"), activityPage: page(req.query.activityPage), worklogPage: page(req.query.worklogPage) });
+  const data = await readTaskDetails({ organizationId: req.auth!.organizationId!, task, project, canEdit: project.status !== "archived" && (isAdmin(req) || member?.role !== "viewer"), canAdministerTask: isAdmin(req), activityPage: page(req.query.activityPage), worklogPage: page(req.query.worklogPage) });
   return sendResponseObject({ res, data });
 };
 
 export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
-  const completed = await completeTimedTaskIfDue(task);
-  if (completed) throw new ConflictException("This task just completed automatically. Refresh before editing it.");
+  const completed = await pauseTimedTaskIfDue(task);
+  if (completed) throw new ConflictException("This task just paused automatically. Refresh before editing it.");
   const before: any = {}, changes: any = {};
   for (const field of ["title", "description", "priority", "parentStoryId", "startDate", "dueDate", "labels"] as const) if (req.body[field] !== undefined) { before[field] = (task as any)[field]; changes[field] = ["startDate", "dueDate"].includes(field) ? optionalDate(req.body[field]) : req.body[field]; }
   if (changes.title !== undefined) changes.title = clean(changes.title, "Title", 180);
   if (req.body.assigneeEmployeeIds !== undefined) { before.assigneeEmployeeIds = task.assigneeEmployeeIds; changes.assigneeEmployeeIds = await validAssignees(req, param(req, "id"), req.body.assigneeEmployeeIds); }
   if (req.body.durationMinutes !== undefined) {
+    if (task.durationExtensionRequired && req.body.durationMinutes !== task.durationMinutes && !isAdmin(req)) throw new ForbiddenException("Only an admin can increase the duration after an automatic pause");
     before.durationMinutes = task.durationMinutes;
     changes.durationMinutes = durationChoice(project, req.body.durationMinutes, task.durationMinutes);
     const tracked = (task.accumulatedSeconds || 0) + (task.timeStartedAt ? Math.max(0, Math.floor((Date.now() - +task.timeStartedAt) / 1000)) : 0);
     if (changes.durationMinutes && changes.durationMinutes !== task.durationMinutes && changes.durationMinutes * 60 <= tracked) throw new ValidationException("Choose a duration greater than the time already tracked");
+    if (task.durationExtensionRequired && changes.durationMinutes !== task.durationMinutes) { before.durationExtensionRequired = true; changes.durationExtensionRequired = false; }
   }
   for (const field of Object.keys(changes)) if (sameHistoryValue(before[field], changes[field])) { delete before[field]; delete changes[field]; }
   if (!Object.keys(changes).length) return sendResponseObject({ res, data: { task: serialize(task) } });
@@ -462,7 +468,7 @@ export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
     const set = Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined)), unset = Object.fromEntries(Object.entries(changes).filter(([, value]) => value === undefined).map(([key]) => [key, 1]));
     if (Object.prototype.hasOwnProperty.call(changes, "dueDate")) unset.reminder24hSentAt = 1;
     if (task.autoCompleteAt) set.autoCompleteAt = task.autoCompleteAt; else unset.autoCompleteAt = 1;
-    const updated = await ProjectTaskModel.findOneAndUpdate({ _id: task.id, organizationId: task.organizationId, workflowStatusId: snapshot.workflowStatusId, timeStartedAt: snapshot.timeStartedAt || { $exists: false }, durationMinutes: snapshot.durationMinutes || { $exists: false }, accumulatedSeconds: snapshot.accumulatedSeconds || 0 }, { $set: set, $unset: unset }, { new: true });
+    const updated = await ProjectTaskModel.findOneAndUpdate({ _id: task.id, organizationId: task.organizationId, workflowStatusId: snapshot.workflowStatusId, timeStartedAt: snapshot.timeStartedAt || { $exists: false }, durationMinutes: snapshot.durationMinutes || { $exists: false }, accumulatedSeconds: snapshot.accumulatedSeconds || 0, autoPaused: snapshot.autoPaused ? true : { $ne: true }, durationExtensionRequired: snapshot.durationExtensionRequired ? true : { $ne: true } }, { $set: set, $unset: unset }, { new: true });
     if (!updated) throw new ConflictException("The task timer changed. Refresh and try again.");
   } else await task.save();
   await activity(req, param(req, "id"), "task.updated", task.id, { before, after: Object.fromEntries(Object.entries(changes).map(([key, value]) => [key, value === undefined ? null : value])) });
@@ -474,6 +480,7 @@ export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
 export const deleteTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
+  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can delete an automatically paused task");
   task.isDeleted = true;
   await task.save();
   await activity(req, project.id, "task.deleted", task.id, { key: task.key, title: task.title });
@@ -484,6 +491,7 @@ export const restoreTask = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req, param(req, "id"), true);
   const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId"), "task ID"), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true });
   if (!task) throw new ObjectNotFoundException("Deleted task");
+  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can restore an automatically paused task");
   task.isDeleted = false;
   await task.save();
   await activity(req, param(req, "id"), "task.restored", task.id, { key: task.key, title: task.title });
@@ -495,6 +503,7 @@ export const permanentlyDeleteTask = async (req: AuthenticatedRequest, res: Resp
   if (!isAdmin(req) && member?.role !== "project_manager") throw new ForbiddenException("Only a project manager can permanently delete tasks");
   const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId"), "task ID"), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true });
   if (!task) throw new ObjectNotFoundException("Deleted task");
+  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can delete an automatically paused task");
   const attachments = await ProjectAttachmentModel.find({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }).select("storedName").lean();
   await activity(req, param(req, "id"), "task.permanently_deleted", task.id, { key: task.key, title: task.title });
   await Promise.all([
@@ -510,7 +519,8 @@ export const permanentlyDeleteTask = async (req: AuthenticatedRequest, res: Resp
 export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
-  const completed = await completeTimedTaskIfDue(task);
+  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can move an automatically paused task");
+  const completed = await pauseTimedTaskIfDue(task);
   if (completed) return sendResponseObject({ res, data: { task: serialize(completed) } });
   const snapshot = task.toObject();
   const targetId = object(req.body.workflowStatusId, "workflow status ID");
@@ -523,6 +533,7 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   // Timer behaviour is configured per destination column. Neutral columns do
   // not alter the timer, so it can continue across review/QA columns.
   const timerAction = timerActionFor(target);
+  if (timerAction === "start" && task.durationExtensionRequired) throw new ConflictException("An admin must increase the duration before this task can resume");
   if (timerAction === "start") durationChoice(project, task.durationMinutes, task.durationMinutes);
   task.completionMethod = target.category === "done" ? "manual" : undefined;
   task.completedAt = target.category === "done" ? now : undefined;
@@ -537,11 +548,12 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
     task.timeStoppedAt = undefined;
     task.autoCompleteAt = durationDeadline(task, now);
   }
+  if (task.autoPaused) task.autoPaused = false;
   task.workflowStatusId = target.id;
   await saveTaskClock(task, snapshot);
   if (timerAction === "stop" && snapshot.timeStartedAt) await stopTimerSession(req, task, now, "status_change", snapshot.timeStartedAt);
   if (timerAction === "start" && !snapshot.timeStartedAt) await startTimerSession(req, task, now);
-  await activity(req, param(req, "id"), "task.status_changed", task.id, { fromStatusId: before, toStatusId: target.id, from: current.name, to: target.name });
+  await activity(req, param(req, "id"), "task.status_changed", task.id, { fromStatusId: before, toStatusId: target.id, from: current.name, to: target.name, ...(snapshot.autoPaused ? { reason: "admin_released_auto_pause" } : {}) });
   await notifyProject(req, project, task, "project.task_moved", `${task.title} moved`, `${current.name} → ${target.name}`, task.assigneeEmployeeIds);
   return sendResponseObject({ res, data: { task: serialize(task) } });
 };
@@ -549,11 +561,13 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
 export const updateTaskTimer = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
-  const completed = await completeTimedTaskIfDue(task);
+  const completed = await pauseTimedTaskIfDue(task);
   if (completed) return sendResponseObject({ res, data: { task: serialize(completed) } });
   const snapshot = task.toObject();
   const action = String(req.body.action || "");
   if (!["start", "pause"].includes(action)) throw new ValidationException("Timer action must be start or pause");
+  if (action === "start" && task.autoPaused) throw new ForbiddenException("An admin must move this task out of Pause before it can resume");
+  if (action === "start" && task.durationExtensionRequired) throw new ForbiddenException("An admin must increase the duration before this task can resume");
   if (action === "start" && task.completedAt) throw new ConflictException("Move this task to an active column before restarting its timer");
   if (action === "start") durationChoice(project, task.durationMinutes, task.durationMinutes);
   if ((action === "pause" && !task.timeStartedAt) || (action === "start" && task.timeStartedAt)) return sendResponseObject({ res, data: { task: serialize(task) } });

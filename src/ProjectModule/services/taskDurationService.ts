@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import ProjectModel from "../models/Project";
 import ProjectTaskModel from "../models/ProjectTask";
 import WorkflowStatusModel from "../models/WorkflowStatus";
+import { ensurePauseStatus } from "./pauseWorkflowService";
 import TaskTimeSessionModel from "../models/TaskTimeSession";
 import ProjectActivityModel from "../models/ProjectActivity";
 import { logger, ValidationException } from "../../node-base/utils";
@@ -18,10 +19,6 @@ export function durationChoice(
   // Existing selections remain valid if an admin removes their preset.
   if (value !== current && !project.taskDurationOptionsMinutes?.includes(value))
     throw new ValidationException("Choose a duration configured by the admin");
-  if (!project.autoCompleteStatusId)
-    throw new ValidationException(
-      "Ask an admin to configure a completion column first",
-    );
   return value;
 }
 
@@ -35,44 +32,46 @@ export function durationDeadline(task: any, startedAt: Date): Date | undefined {
   return new Date(+startedAt + remaining * 1000);
 }
 
-export async function settleAutoCompletion(task: any) {
-  if (
-    !task.autoCompletionPending ||
-    !task.autoCompletionId ||
-    !task.completedAt ||
-    !task.autoCompletionStartedAt
-  )
-    return;
+type TimedStop = {
+  id?: string;
+  pending?: boolean;
+  startedAt?: Date;
+  endedAt?: Date;
+  from?: string;
+  to?: string;
+  action: string;
+  reason: "auto_done" | "auto_pause";
+  idField: string;
+  pendingField: string;
+};
+
+async function settleTimedStop(task: any, event: TimedStop) {
+  if (!event.pending || !event.id || !event.startedAt || !event.endedAt) return;
   const scope = {
     organizationId: task.organizationId,
     projectId: task.projectId,
     taskId: String(task._id || task.id),
   };
-  const endedAt = new Date(task.completedAt),
-    startedAt = new Date(task.autoCompletionStartedAt);
-  let session = await TaskTimeSessionModel.findOne({
+  const startedAt = new Date(event.startedAt),
+    endedAt = new Date(event.endedAt);
+  const session = await TaskTimeSessionModel.findOne({
     ...scope,
     startedAt,
     isDeleted: { $ne: true },
   });
-  if (session) {
-    // Idempotent and also corrects a checkout/pause racing with the deadline.
+  const stop = {
+    endedAt,
+    durationSeconds: Math.max(0, Math.floor((+endedAt - +startedAt) / 1000)),
+    stopReason: event.reason,
+  };
+  if (session)
     await TaskTimeSessionModel.updateOne(
       { _id: session._id, ...scope },
-      {
-        $set: {
-          endedAt,
-          durationSeconds: Math.max(
-            0,
-            Math.floor((+endedAt - +startedAt) / 1000),
-          ),
-          stopReason: "auto_done",
-        },
-      },
+      { $set: stop },
     );
-  } else {
-    session = await TaskTimeSessionModel.findOneAndUpdate(
-      { _id: task.autoCompletionId, ...scope },
+  else
+    await TaskTimeSessionModel.findOneAndUpdate(
+      { _id: event.id, ...scope },
       {
         $setOnInsert: {
           ...scope,
@@ -82,37 +81,31 @@ export async function settleAutoCompletion(task: any) {
               : undefined,
           startedByUserId: task.createdBy,
           startedAt,
-          endedAt,
-          durationSeconds: Math.max(
-            0,
-            Math.floor((+endedAt - +startedAt) / 1000),
-          ),
-          stopReason: "auto_done",
+          ...stop,
         },
       },
       { upsert: true, new: true },
     );
-  }
   const statuses = await WorkflowStatusModel.find({
     organizationId: task.organizationId,
     projectId: task.projectId,
-    _id: { $in: [task.autoCompletionFromStatusId, task.workflowStatusId] },
+    _id: { $in: [event.from, event.to] },
   }).lean();
-  const name = (id: string) =>
+  const name = (id?: string) =>
     statuses.find((row) => String(row._id) === id)?.name || "Unknown column";
   await ProjectActivityModel.findOneAndUpdate(
-    { _id: task.autoCompletionId },
+    { _id: event.id },
     {
       $setOnInsert: {
         ...scope,
         actorUserId: "system",
-        action: "task.auto_completed",
+        action: event.action,
         createdAt: endedAt,
         changes: {
-          fromStatusId: task.autoCompletionFromStatusId,
-          toStatusId: task.workflowStatusId,
-          from: name(task.autoCompletionFromStatusId),
-          to: name(task.workflowStatusId),
+          fromStatusId: event.from,
+          toStatusId: event.to,
+          from: name(event.from),
+          to: name(event.to),
           durationMinutes: task.durationMinutes,
           reason: "duration_reached",
           stoppedAt: endedAt,
@@ -125,14 +118,48 @@ export async function settleAutoCompletion(task: any) {
     {
       _id: task._id || task.id,
       organizationId: task.organizationId,
-      autoCompletionId: task.autoCompletionId,
+      [event.idField]: event.id,
     },
-    { $set: { autoCompletionPending: false } },
+    { $set: { [event.pendingField]: false } },
   );
 }
 
-export async function completeTimedTaskIfDue(task: any, now = new Date()) {
-  if (!task.durationMinutes || !task.timeStartedAt || task.isDeleted)
+// Finish already-recorded completions from the previous behavior without
+// changing historical Done tasks or relabeling their history.
+export const settleAutoCompletion = (task: any) =>
+  settleTimedStop(task, {
+    id: task.autoCompletionId,
+    pending: task.autoCompletionPending,
+    startedAt: task.autoCompletionStartedAt,
+    endedAt: task.completedAt,
+    from: task.autoCompletionFromStatusId,
+    to: task.workflowStatusId,
+    action: "task.auto_completed",
+    reason: "auto_done",
+    idField: "autoCompletionId",
+    pendingField: "autoCompletionPending",
+  });
+export const settleAutoPause = (task: any) =>
+  settleTimedStop(task, {
+    id: task.autoPauseId,
+    pending: task.autoPausePending,
+    startedAt: task.autoPauseStartedAt,
+    endedAt: task.autoPausedAt,
+    from: task.autoPauseFromStatusId,
+    to: task.autoPauseStatusId,
+    action: "task.auto_paused",
+    reason: "auto_pause",
+    idField: "autoPauseId",
+    pendingField: "autoPausePending",
+  });
+
+export async function pauseTimedTaskIfDue(task: any, now = new Date()) {
+  if (
+    !task.durationMinutes ||
+    !task.timeStartedAt ||
+    task.isDeleted ||
+    task.autoPaused
+  )
     return null;
   const remaining = Math.max(
     0,
@@ -151,14 +178,8 @@ export async function completeTimedTaskIfDue(task: any, now = new Date()) {
     isDeleted: { $ne: true },
     status: { $ne: "archived" },
   });
-  if (!project?.autoCompleteStatusId) return null;
-  const target = await WorkflowStatusModel.findOne({
-    _id: project.autoCompleteStatusId,
-    ...scope,
-    isArchived: false,
-    category: "done",
-  });
-  if (!target) return null;
+  if (!project) return null;
+  const target = await ensurePauseStatus(project);
   const updated = await ProjectTaskModel.findOneAndUpdate(
     {
       _id: task._id || task.id,
@@ -167,6 +188,7 @@ export async function completeTimedTaskIfDue(task: any, now = new Date()) {
       timeStartedAt: task.timeStartedAt,
       durationMinutes: task.durationMinutes,
       accumulatedSeconds: task.accumulatedSeconds || 0,
+      autoPaused: { $ne: true },
     },
     {
       $set: {
@@ -176,54 +198,74 @@ export async function completeTimedTaskIfDue(task: any, now = new Date()) {
           task.accumulatedSeconds || 0,
         ),
         timeStoppedAt: endedAt,
-        completedAt: endedAt,
-        completionMethod: "auto",
-        autoCompletionId: randomBytes(12).toString("hex"),
-        autoCompletionStartedAt: task.timeStartedAt,
-        autoCompletionFromStatusId: task.workflowStatusId,
-        autoCompletionPending: true,
+        autoPausedAt: endedAt,
+        autoPaused: true,
+        durationExtensionRequired: true,
+        autoPauseId: randomBytes(12).toString("hex"),
+        autoPauseStartedAt: task.timeStartedAt,
+        autoPauseFromStatusId: task.workflowStatusId,
+        autoPauseStatusId: target.id,
+        autoPausePending: true,
       },
-      $unset: { timeStartedAt: 1, autoCompleteAt: 1 },
+      $unset: {
+        timeStartedAt: 1,
+        autoCompleteAt: 1,
+        completedAt: 1,
+        completionMethod: 1,
+      },
     },
     { new: true },
   );
   if (!updated) return null;
-  await settleAutoCompletion(updated);
+  await settleAutoPause(updated);
   return updated;
 }
 
 let scanning = false;
-export async function completeDueTasks(now = new Date()) {
+export async function pauseDueTasks(now = new Date()) {
   if (scanning) return;
   scanning = true;
   try {
-    // The deadline is stored on the server; no browser needs to remain open.
     const due = await ProjectTaskModel.find({
       isDeleted: { $ne: true },
       autoCompleteAt: { $lte: now },
       timeStartedAt: { $exists: true },
       durationMinutes: { $gt: 0 },
+      autoPaused: { $ne: true },
     })
       .limit(200)
       .lean();
     for (const task of due) {
       try {
-        await completeTimedTaskIfDue(task, now);
+        await pauseTimedTaskIfDue(task, now);
       } catch (error) {
-        logger.error("Task auto-completion failed", {
+        logger.error("Task auto-pause failed", {
           taskId: String(task._id),
           error,
         });
       }
     }
-    const pending = await ProjectTaskModel.find({ autoCompletionPending: true })
+    const pending = await ProjectTaskModel.find({ autoPausePending: true })
       .limit(200)
       .lean();
     for (const task of pending) {
       try {
+        await settleAutoPause(task);
+      } catch (error) {
+        logger.error("Task auto-pause settlement failed", {
+          taskId: String(task._id),
+          error,
+        });
+      }
+    }
+    const legacy = await ProjectTaskModel.find({ autoCompletionPending: true })
+      .limit(200)
+      .lean();
+    for (const task of legacy) {
+      try {
         await settleAutoCompletion(task);
       } catch (error) {
-        logger.error("Task auto-completion settlement failed", {
+        logger.error("Legacy completion settlement failed", {
           taskId: String(task._id),
           error,
         });
@@ -236,7 +278,7 @@ export async function completeDueTasks(now = new Date()) {
 
 export function startTaskDurationWorker() {
   const run = () => {
-    void completeDueTasks().catch((error) =>
+    void pauseDueTasks().catch((error) =>
       logger.error("Task duration scan failed", { error }),
     );
   };

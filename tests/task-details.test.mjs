@@ -83,6 +83,7 @@ function controllerFixture({ member = { role: "member" }, status = "active", pro
     if (path.endsWith("node-base/utils")) return { ValidationException: AccessError, ObjectNotFoundException: AccessError, ForbiddenException: AccessError, ConflictException: AccessError, sendResponseObject: ({ data }) => data };
     if (path.endsWith("services/taskDetailService")) return { async readTaskDetails(options) { reads.push(options); return { task: options.task, permissions: { canEdit: options.canEdit } }; } };
     if (path.endsWith("services/taskHistory")) return historyScope.exports;
+    if (path.endsWith("services/pauseWorkflowService")) return { async ensurePauseStatus() {} };
     if (path.includes("/models/") && models[path.split("/").at(-1)]) return { __esModule: true, default: models[path.split("/").at(-1)] };
     if (path.endsWith("models/Project")) return { __esModule: true, default: { async findOne(filter) { calls.push(filter); return projectExists ? project : null; } } };
     if (path.endsWith("models/ProjectMember")) return { __esModule: true, default: { async findOne(filter) { calls.push(filter); return member; } } };

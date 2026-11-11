@@ -12,7 +12,7 @@ import { taskHistoryChanges } from "./taskHistory";
 const serialize = (doc: any) => { const value = doc?.toObject ? doc.toObject() : doc; const { _id, __v, ...rest } = value; return { ...rest, id: String(_id) }; };
 const validIds = (ids: any[]) => [...new Set(ids.filter((id) => typeof id === "string" && isValidObjectId(id)))];
 
-export async function readTaskDetails({ organizationId, task, project, canEdit, activityPage = 1, worklogPage = 1 }: { organizationId: string; task: any; project: any; canEdit: boolean; activityPage?: number; worklogPage?: number }) {
+export async function readTaskDetails({ organizationId, task, project, canEdit, canAdministerTask = false, activityPage = 1, worklogPage = 1 }: { organizationId: string; task: any; project: any; canEdit: boolean; canAdministerTask?: boolean; activityPage?: number; worklogPage?: number }) {
   const scope = { organizationId, projectId: task.projectId, taskId: task.id, isDeleted: { $ne: true } };
   const size = 50;
   const [comments, history, historyCount, attachments, worklog, worklogCount, statuses, workTotals, commentEvents] = await Promise.all([
@@ -48,8 +48,8 @@ export async function readTaskDetails({ organizationId, task, project, canEdit, 
   const trackedSeconds = (task.accumulatedSeconds || 0) + (task.timeStartedAt ? Math.max(0, Math.floor((+now - +new Date(task.timeStartedAt)) / 1000)) : 0);
   return {
     task: enrichedTask,
-    project: { id: project.id, name: project.name, key: project.key, status: project.status, taskDurationOptionsMinutes: project.taskDurationOptionsMinutes || [], autoCompleteStatusId: project.autoCompleteStatusId },
-    permissions: { canEdit },
+    project: { id: project.id, name: project.name, key: project.key, status: project.status, taskDurationOptionsMinutes: project.taskDurationOptionsMinutes || [], pauseStatusId: project.pauseStatusId },
+    permissions: { canEdit, canMove: canEdit && (!task.autoPaused || canAdministerTask), canEditDuration: canEdit && (!task.durationExtensionRequired || canAdministerTask) },
     workflow: statuses.filter((status) => !status.isArchived && !status.isDeleted).map(serialize),
     children: children.map(serialize),
     comments: comments.map((comment: any) => { const recorded = commentEvents.find((event: any) => event.changes?.commentId === String(comment._id)); return { ...serialize(comment), author: personFor(comment.authorEmployeeId || recorded?.actorEmployeeId, comment.authorUserId || recorded?.actorUserId), mentions: (comment.mentionedEmployeeIds || []).map((id: string) => employeeMap.get(id)).filter(Boolean) }; }),

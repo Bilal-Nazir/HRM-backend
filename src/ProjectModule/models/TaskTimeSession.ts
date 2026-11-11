@@ -14,6 +14,6 @@ export class TaskTimeSessionClass extends BaseModelClass<TaskTimeSessionClass> {
   @prop({ required: true }) startedAt!: Date;
   @prop() endedAt?: Date;
   @prop({ min: 0 }) durationSeconds?: number;
-  @prop({ enum: ["pause", "status_change", "checkout", "auto_done"] }) stopReason?: string;
+  @prop({ enum: ["pause", "status_change", "checkout", "auto_done", "auto_pause"] }) stopReason?: string;
 }
 export default getModelForClass(TaskTimeSessionClass, baseModelOptions);

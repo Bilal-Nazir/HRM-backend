@@ -18,5 +18,6 @@ export class ProjectClass extends BaseModelClass<ProjectClass> {
   @prop({ default: 1 }) nextIssueNumber!: number;
   @prop({ type: () => [Number], default: [] }) taskDurationOptionsMinutes!: number[];
   @prop() autoCompleteStatusId?: string;
+  @prop() pauseStatusId?: string;
 }
 export default getModelForClass(ProjectClass, baseModelOptions);
