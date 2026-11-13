@@ -17,10 +17,12 @@ HTTP backend and its background workers were stopped before the final backup.
   containers and the public API health endpoint passed checks. Temporary sessions
   verified Super Admin/company/employee/attendance/project APIs and employee
   session/company/attendance/task APIs, then were revoked.
-- The frontend commit was pushed to its auto-deploy repository. Cloudflare's
-  separate Workers build failed; its private build log is pending from the account
-  owner. Do not treat the custom-domain frontend as updated yet. AWS has the new
-  frontend; the public API has the migrated backend.
+- Cloudflare's initial Workers build failed during `npm ci` because five workerd
+  platform packages were missing from the lockfile. Frontend fix
+  `e77084ea189a8a764a44bc977af7fc5cd4a5ff85` restores exactly those entries without
+  upgrading dependencies. Its clean npm 10.9.2 installation, production build and
+  GitHub checks passed. Cloudflare confirmed successful production deployment on
+  2026-11-13 at 11:04:38 UTC (4:04:38 PM Asia/Karachi).
 
 ## Backups and rollback
 
