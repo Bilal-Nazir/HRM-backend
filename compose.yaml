@@ -57,6 +57,7 @@ services:
       DB_REDIS_PASS: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Set INITIAL_ADMIN_PASSWORD}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       PROJECT_UPLOAD_DIR: /app/uploads/project-attachments
     volumes:
       - project_uploads:/app/uploads

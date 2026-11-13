@@ -47,6 +47,11 @@ existing admin's password.
 This starts a **new empty database**, not your local MongoDB. Existing employee
 records are not migrated. Plan a separate authenticated backup/restore if needed.
 The Mongo app user has access only to `hrm`; the root account is for maintenance.
+Set optional `GOOGLE_CLIENT_ID` to your Google OAuth Web application client ID to
+enable Google sign-in. Add the frontend's HTTPS origin in Google Cloud's
+authorized JavaScript origins, then recreate the backend container after changing
+this value. No Google client secret is used by the sign-in flow.
+
 Database credentials initialize only on a fresh volume. Editing environment
 passwords later does not rotate existing Mongo users—rotate in MongoDB as well.
 
