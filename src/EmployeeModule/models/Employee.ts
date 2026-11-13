@@ -1,3 +1,4 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
@@ -19,8 +20,8 @@ const { getModelForClass } = TypeGoose;
   employeeCode: "text",
 })
 export class EmployeeClass extends BaseModelClass<EmployeeClass> {
-  @prop({ required: true }) public organizationId!: string;
-  @prop() public userId?: string;
+  @mongoRef("OrganizationClass", true) public organizationId!: string;
+  @mongoRef("UserClass") public userId?: string;
   @prop({ required: true, trim: true }) public employeeCode!: string;
   @prop({ required: true, trim: true }) public firstName!: string;
   @prop({ required: true, trim: true }) public lastName!: string;
@@ -29,11 +30,11 @@ export class EmployeeClass extends BaseModelClass<EmployeeClass> {
   @prop({ lowercase: true, trim: true }) public personalEmail?: string;
   @prop({ trim: true }) public phone?: string;
   @prop({ trim: true }) public jobTitle?: string;
-  @prop() public departmentId?: string;
-  @prop() public teamId?: string;
-  @prop() public managerEmployeeId?: string;
-  @prop() public primaryOfficeLocationId?: string;
-  @prop() public workScheduleId?: string;
+  @mongoRef("DepartmentClass") public departmentId?: string;
+  @mongoRef("TeamClass") public teamId?: string;
+  @mongoRef("EmployeeClass") public managerEmployeeId?: string;
+  @mongoRef("OfficeLocationClass") public primaryOfficeLocationId?: string;
+  @mongoRef("WorkScheduleClass") public workScheduleId?: string;
   @prop({
     required: true,
     default: "invited",

@@ -1,3 +1,4 @@
+import MembershipModel from "../../TenantModule/models/CompanyMembership";
 import RoleModel from "../../AccessModule/models/Role";
 import { defaultRoles } from "../../AccessModule/utils/permissions";
 import AuthController from "../../AuthModule/controllers/AuthController";
@@ -14,6 +15,14 @@ export const createFirstAdminScript = async () => {
     baseFilter: false,
   });
 
+  if (
+    !organization &&
+    (!process.env.INITIAL_ADMIN_PASSWORD ||
+      process.env.INITIAL_ADMIN_PASSWORD.length < 12)
+  )
+    throw new Error(
+      "Set INITIAL_ADMIN_PASSWORD (12+ characters) before starting a new installation",
+    );
   if (!organization)
     organization = await OrganizationController.dbInsertRecord({
       Collection: OrganizationModel,
@@ -62,15 +71,36 @@ export const createFirstAdminScript = async () => {
   });
   if (admin) return;
 
-  return AuthController.dbInsertRecord({
+  const initialPassword = process.env.INITIAL_ADMIN_PASSWORD;
+  if (!initialPassword || initialPassword.length < 12)
+    throw new Error(
+      "Set INITIAL_ADMIN_PASSWORD (12+ characters) to create the initial Super Admin",
+    );
+  const created = await AuthController.dbInsertRecord({
     data: {
       [constants.fields.User.organizationId]: organization.id,
       [constants.fields.User.loginId]: "admin-001",
-      passwordHash: await hashPassword("Admin@123"),
+      passwordHash: await hashPassword(initialPassword),
       [constants.fields.User.isActive]: true,
       [constants.fields.User.isPlatformAdmin]: true,
     },
-  }).then(() => {
-    logger.info("Create First Admin Script - Admin Created");
   });
+  await OrganizationModel.updateOne(
+    { _id: organization.id },
+    { $set: { ownerUserId: created.id, tenantSchemaVersion: 1 } },
+  );
+  await MembershipModel.updateOne(
+    { organizationId: organization.id, userId: created.id },
+    {
+      $setOnInsert: {
+        organizationId: organization.id,
+        userId: created.id,
+        status: "active",
+        isDeleted: false,
+      },
+    },
+    { upsert: true },
+  );
+  logger.info("Initial Super Admin created");
+  return created;
 };

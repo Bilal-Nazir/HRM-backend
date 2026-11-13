@@ -9,7 +9,17 @@ import OrganizationController, {
 const router = Router();
 router.post(
   "/bootstrap",
-  asyncWrapper(OrganizationController.bootstrapController),
+  authMiddleware(),
+  asyncWrapper(async (_req, res) => {
+    res
+      .status(409)
+      .json({
+        success: false,
+        code: 409,
+        message: "Use authenticated company creation at /companies",
+        data: {},
+      });
+  }),
 );
 router.get(
   "/",

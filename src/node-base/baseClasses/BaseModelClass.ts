@@ -55,7 +55,7 @@ export abstract class BaseModelClass<T = any> {
 export const baseModelOptions = {
   schemaOptions: {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true },
+    toJSON: { virtuals: true, getters: true },
+    toObject: { virtuals: true, getters: true },
   },
 };

@@ -1,3 +1,5 @@
+import mongoose from "mongoose";
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
@@ -5,12 +7,13 @@ const { getModelForClass } = TypeGoose;
 
 @index({ organizationId: 1, createdAt: -1 })
 export class AuditLogClass extends BaseModelClass<AuditLogClass> {
-  @prop({ required: true }) public organizationId!: string;
-  @prop({ required: true }) public actorUserId!: string;
+  @mongoRef("OrganizationClass", true) public organizationId!: string;
+  @mongoRef("UserClass") public actorUserId?: string;
   @prop({ required: true, default: "user" }) public actorType!: string;
   @prop({ required: true }) public action!: string;
   @prop({ required: true }) public entityType!: string;
-  @prop({ required: true }) public entityId!: string;
+  @prop({ type: () => mongoose.Schema.Types.ObjectId, required: true })
+  public entityId!: string;
   @prop({ type: () => Object }) public before?: Record<string, unknown>;
   @prop({ type: () => Object }) public after?: Record<string, unknown>;
   @prop({ type: () => Object }) public metadata?: Record<string, unknown>;

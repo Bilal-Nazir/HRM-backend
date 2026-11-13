@@ -205,7 +205,11 @@ export class OrganizationControllerClass extends BaseControllerClass<Organizatio
 
     const organization = await this.dbUpdateRecord({
       readFilter: { _id: req.auth!.organizationId },
-      data: req.body,
+      data: Object.fromEntries(
+        ["name", "legalName", "timezone", "defaultLocale"]
+          .filter((key) => req.body[key] !== undefined)
+          .map((key) => [key, req.body[key]]),
+      ),
       baseFilter: false,
     });
     if (!organization) return next(new ObjectNotFoundException("Organization"));
@@ -236,6 +240,29 @@ export class OrganizationUnitController extends BaseControllerClass<any> {
   ) {
     super();
   }
+  private validateUnitReferences = async (
+    organizationId: string,
+    data: Record<string, any>,
+  ) => {
+    for (const [field, Model] of [
+      ["departmentId", DepartmentModel],
+      ["leadEmployeeId", EmployeeModel],
+      ["headEmployeeId", EmployeeModel],
+    ] as const) {
+      if (
+        data[field] &&
+        !(await Model.exists({
+          _id: data[field],
+          organizationId,
+          isDeleted: { $ne: true },
+          ...(field === "departmentId"
+            ? { status: "active" }
+            : { employmentStatus: "active" }),
+        }))
+      )
+        throw new ValidationException(`${field} must belong to this company`);
+    }
+  };
   list = async (req: AuthenticatedRequest, res: Response) =>
     sendResponseObject({
       res,
@@ -268,6 +295,7 @@ export class OrganizationUnitController extends BaseControllerClass<any> {
         code: [{ rule: "datatype", datatype: "String" }],
         departmentId: [{ rule: "format", type: "id" }],
         leadEmployeeId: [{ rule: "format", type: "id" }],
+        headEmployeeId: [{ rule: "format", type: "id" }],
         latitude: [
           { rule: "datatype", datatype: "Number" },
           { rule: "minValue", value: -90 },
@@ -288,6 +316,7 @@ export class OrganizationUnitController extends BaseControllerClass<any> {
 
     if (!isValid) return next(errorMessages);
 
+    await this.validateUnitReferences(req.auth!.organizationId!, postData);
     const item = await this.dbInsertRecord({ data: postData });
     await writeAudit({
       organizationId: req.auth!.organizationId!,
@@ -308,12 +337,44 @@ export class OrganizationUnitController extends BaseControllerClass<any> {
     res: Response,
     next: NextFunction,
   ) => {
+    const allowed = [
+      "name",
+      "code",
+      "address",
+      "latitude",
+      "longitude",
+      "geofenceRadiusMeters",
+      "timezone",
+      "departmentId",
+      "leadEmployeeId",
+      "headEmployeeId",
+      "status",
+    ];
+    const data = Object.fromEntries(
+      allowed
+        .filter((field) => req.body[field] !== undefined)
+        .map((field) => [field, req.body[field]]),
+    );
+    if (!Object.keys(data).length)
+      throw new ValidationException("No company fields to update");
+    if (
+      data.name !== undefined &&
+      (typeof data.name !== "string" ||
+        !data.name.trim() ||
+        data.name.length > 128)
+    )
+      throw new ValidationException("Enter a valid name");
+    if (data.status && !["active", "archived"].includes(data.status))
+      throw new ValidationException("Invalid status");
+    if (data.timezone && !timezoneValid(data.timezone))
+      throw new ValidationException("Invalid timezone");
+    await this.validateUnitReferences(req.auth!.organizationId!, data);
     const item = await this.dbUpdateRecord({
       readFilter: {
         _id: req.params.id,
         organizationId: req.auth!.organizationId,
       },
-      data: req.body,
+      data,
       baseFilter: false,
     });
     if (!item) return next(new ObjectNotFoundException(this._modelName));

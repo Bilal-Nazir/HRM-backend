@@ -66,7 +66,7 @@ function fixture(seed = running()) {
     return context.require(path);
   } };
   runInNewContext(compile("controllers/ProjectController.ts"), controllerScope);
-  const req = (body = {}, admin = true) => ({ params: { id: projectId, taskId }, query: {}, body, auth: { organizationId: org, userId, employeeId, permissions: admin ? ["project.manage"] : [] } });
+  const req = (body = {}, admin = true) => ({ params: { id: projectId, taskId }, query: {}, body, auth: { organizationId: org, userId, employeeId, isCompanyOwner: admin, permissions: admin ? ["project.manage"] : [] } });
   const checkoutScope = { exports: {}, require: (path) => path.endsWith("/taskDurationService") ? context.exports : context.require(path) };
   runInNewContext(compile("services/checkoutTimerService.ts"), checkoutScope);
   return { ...context.exports, ...checkoutScope.exports, controller: controllerScope.exports, req, tasks, projects, statuses, sessions, history, members, ...pauseService };
@@ -93,7 +93,7 @@ test("server timeout moves to Pause, caps at the exact limit and records system 
   assert.equal(row.workflowStatusId, pause); assert.equal(row.autoPaused, true); assert.equal(row.durationExtensionRequired, true); assert.equal(row.completedAt, undefined); assert.equal(row.completionMethod, undefined); assert.equal(+row.autoPausedAt, +now);
   assert.equal(row.timeStartedAt, undefined); assert.equal(row.autoCompleteAt, undefined); assert.equal(row.accumulatedSeconds, 1800);
   assert.equal(f.sessions.rows[0].durationSeconds, 1200); assert.equal(f.sessions.rows[0].stopReason, "auto_pause"); assert.equal(+f.sessions.rows[0].endedAt, +now);
-  assert.equal(f.history.rows[0].actorUserId, "system"); assert.equal(f.history.rows[0].action, "task.auto_paused"); assert.equal(f.history.rows[0].changes.to, "Pause");
+  assert.equal(f.history.rows[0].actorType, "system"); assert.equal(f.history.rows[0].actorUserId, undefined); assert.equal(f.history.rows[0].action, "task.auto_paused"); assert.equal(f.history.rows[0].changes.to, "Pause");
   await f.pauseDueTasks(new Date(+now + 20 * 60000)); assert.equal(f.history.rows.length, 1); assert.equal(f.sessions.rows.length, 1);
 });
 
@@ -281,4 +281,13 @@ test("an existing Pause column is reused and historical Auto done records stay c
   Object.assign(f.tasks.rows[0], { workflowStatusId: done, completionMethod: "auto", completedAt: now, timeStartedAt: undefined, autoCompleteAt: undefined });
   await f.pauseDueTasks(now);
   assert.equal(f.tasks.rows[0].workflowStatusId, done); assert.equal(f.tasks.rows[0].completionMethod, "auto");
+});
+
+
+test("a delegated project.manage role cannot release an automatic pause reserved for the company admin", async () => {
+  const f = fixture(); await f.pauseDueTasks(now);
+  const req = (body) => { const request = f.req(body); request.auth.isCompanyOwner = false; return request; };
+  await assert.rejects(f.controller.moveTask(req({ workflowStatusId: active }), {}), /Only an admin/);
+  await assert.rejects(f.controller.updateTask(req({ durationMinutes: 60 }), {}), /Only an admin/);
+  await assert.rejects(f.controller.deleteTask(req({}), {}), /Only an admin/);
 });

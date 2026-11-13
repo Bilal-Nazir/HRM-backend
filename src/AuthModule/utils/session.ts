@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import jwt, { JwtPayload, SignOptions } from "jsonwebtoken";
 import config from "../../common/config";
 import { Database as RedisDatabase } from "../../node-base/baseClasses/Redis";
+import { currentCompanyContext } from "../../TenantModule/services/companyContext";
 import { AuthUser } from "./types";
 
 type SessionTokenPayload = AuthUser &
@@ -120,14 +121,7 @@ export const refreshAccessToken = async (refreshToken: string) => {
   if (!payload) return null;
 
   const accessTokenId = randomUUID();
-  const sessionPayload: AuthUser = {
-    userId: payload.userId,
-    employeeId: payload.employeeId,
-    organizationId: payload.organizationId,
-    permissions: payload.permissions,
-    accountType: payload.accountType,
-    credentialVersion: payload.credentialVersion || 0,
-  };
+  const { auth: sessionPayload } = await currentCompanyContext(payload, true);
 
   const accessToken = signToken(
     sessionPayload,

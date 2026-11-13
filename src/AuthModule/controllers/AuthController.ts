@@ -1,3 +1,14 @@
+import { assertLoginPortal } from "../utils/loginPortal";
+import {
+  googleChallenge,
+  verifyGoogleCredential,
+} from "../utils/googleIdentity";
+import MembershipModel from "../../TenantModule/models/CompanyMembership";
+import {
+  resolveCompanyContext,
+  sessionProfile,
+} from "../../TenantModule/services/companyContext";
+import { sendCompanySession } from "../../TenantModule/controllers/CompanyController";
 import { NextFunction, Request, Response } from "express";
 import {
   UnauthenticatedException,
@@ -22,9 +33,57 @@ import {
   revokeUserSessions,
 } from "../utils/session";
 
+const companyOwner = (company: any, user: any) =>
+  String(company.ownerUserId || "") === user.id;
+
 export class AuthControllerClass extends BaseControllerClass<UserClass> {
   _Model = UserModel;
   _modelName = constants.fields.User.User;
+
+  public sessionController = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ) => {
+    const auth = req.auth!;
+    const user = await UserModel.findOne({
+      _id: auth.userId,
+      isActive: true,
+      isDeleted: { $ne: true },
+    });
+    if (
+      !user ||
+      (user.credentialVersion || 0) !== (auth.credentialVersion || 0) ||
+      !["admin", "employee"].includes(auth.accountType || "")
+    ) {
+      throw new UnauthenticatedException("Account is inactive or unavailable");
+    }
+    res.set("Cache-Control", "no-store");
+    return sendResponseObject({
+      res,
+      data: {
+        user: sessionProfile(user, auth),
+      },
+    });
+  };
+
+  public updateProfileController = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ) => {
+    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
+    if (!name || name.length > 128)
+      throw new ValidationException("Enter a name up to 128 characters");
+    const user = await UserModel.findOneAndUpdate(
+      { _id: req.auth!.userId, isActive: true, isDeleted: { $ne: true } },
+      { $set: { name } },
+      { new: true },
+    );
+    if (!user) throw new UnauthenticatedException();
+    return sendResponseObject({
+      res,
+      data: { user: sessionProfile(user, req.auth!) },
+    });
+  };
 
   public loginController = async (
     req: Request,
@@ -38,7 +97,9 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
     const organizationSlug = String(req.body.organizationSlug || "")
       .trim()
       .toLowerCase();
-    const portal = String(req.body.portal || "").trim().toLowerCase();
+    const portal = String(req.body.portal || "")
+      .trim()
+      .toLowerCase();
     const validation = await dataValidator.validate(
       {
         loginId,
@@ -68,101 +129,153 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
     }
 
     const organization = organizationSlug
-      ? await this.dbReadRecord({
-          Collection: OrganizationModel,
-          readFilter: {
-            slug: organizationSlug,
-            status: "active",
-          },
-          baseFilter: false,
+      ? await OrganizationModel.findOne({
+          slug: organizationSlug,
+          status: "active",
+          isDeleted: { $ne: true },
         })
       : null;
     if (organizationSlug && !organization)
-      return next(
-        new UnauthenticatedException("Invalid organization or credentials"),
+      throw new UnauthenticatedException("Invalid organization or credentials");
+    let candidates = await UserModel.find({
+      $or: [{ loginId }, { email: loginId }, { legacyLoginIds: loginId }],
+      isActive: true,
+      isDeleted: { $ne: true },
+    })
+      .select("+passwordHash")
+      .limit(20);
+    if (organization) {
+      const profiles = await EmployeeModel.find({
+        organizationId: organization.id,
+        userId: { $in: candidates.map((user) => user.id) },
+        isDeleted: { $ne: true },
+      }).select("userId");
+      const allowed = new Set(
+        profiles.map((profile) => String(profile.userId)),
       );
-    const user = await this.dbReadRecord({
-      readFilter: {
-        loginId,
-        ...(organization && { organizationId: organization._id }),
-        isActive: true,
-      },
-      selectFields: ["+passwordHash"],
-      baseFilter: false,
-    });
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
-      return next(new UnauthenticatedException("Invalid user ID or password"));
-    }
-
-    const employee = await this.dbReadRecord({
-      Collection: EmployeeModel,
-      readFilter: {
-        userId: user._id,
-        employmentStatus: "active",
-      },
-      baseFilter: false,
-    });
-    if (!user.isPlatformAdmin && !employee)
-      return next(
-        new UnauthenticatedException("Employee account is not active"),
-      );
-
-    const assignments = employee
-      ? await this.dbReadRecords({
-          Collection: RoleAssignmentModel,
-          readFilter: { employeeId: employee._id },
-          baseFilter: false,
-        })
-      : [];
-
-    await RoleAssignmentModel.populate(assignments, { path: "roleId" });
-    const permissions = user.isPlatformAdmin
-      ? ["*"]
-      : [
-          ...new Set(
-            assignments.flatMap(
-              (assignment: any) => assignment.roleId?.permissions || [],
-            ),
-          ),
-        ];
-
-    const isAdmin =
-      user.isPlatformAdmin ||
-      assignments.some(
-        (assignment: any) => assignment.roleId?.name === "Organization Admin",
-      );
-    const accountType: "admin" | "employee" = isAdmin ? "admin" : "employee";
-    if (portal !== accountType) {
-      return next(
-        new UnauthenticatedException(
-          portal === "admin"
-            ? "This account cannot sign in to the admin portal"
-            : "Administrator accounts must use the admin portal",
-        ),
+      candidates = candidates.filter(
+        (user) =>
+          user.isPlatformAdmin ||
+          companyOwner(organization, user) ||
+          allowed.has(user.id),
       );
     }
+    // Ambiguous legacy IDs require a company; never pick a user arbitrarily.
+    const user = candidates.length === 1 ? candidates[0] : null;
+    if (
+      !user?.passwordHash ||
+      !(await verifyPassword(password, user.passwordHash))
+    )
+      throw new UnauthenticatedException(
+        "Invalid credentials. If your employee ID is shared, enter your company ID",
+      );
+    const organizationId =
+      organization?.id || (await this.defaultCompany(user));
+    const auth = await resolveCompanyContext(user, organizationId);
+    assertLoginPortal(portal, !!user.isPlatformAdmin);
+    return sendCompanySession(req, res, user, organizationId);
+  };
 
-    const payload = {
+  private defaultCompany = async (user: any): Promise<string | undefined> => {
+    // Super Admin starts in the platform company manager.
+    if (user.isPlatformAdmin) return undefined;
+    const memberships = await MembershipModel.find({
       userId: user.id,
-      employeeId: employee?.id,
-      organizationId:
-        employee?.organizationId?.toString() || user.organizationId?.toString(),
-      permissions,
-      accountType,
-      credentialVersion: user.credentialVersion || 0,
-    };
-    const { accessToken, refreshToken } = await generateSessionTokens(payload);
-    res.set("Access-Control-Expose-Headers", "accessToken, refreshToken");
-    res.set("accessToken", accessToken);
-    res.set("refreshToken", refreshToken);
-    return sendResponseObject({
-      res,
-      data: {
-        accessToken,
-        refreshToken,
-        [this._modelName]: await user.display({ baseData: payload }),
-      },
+      status: "active",
+      isDeleted: { $ne: true },
     });
+    const companies = await OrganizationModel.find({
+      status: "active",
+      isDeleted: { $ne: true },
+      $or: [
+        { ownerUserId: user.id },
+        {
+          _id: {
+            $in: memberships.map((membership) => membership.organizationId),
+          },
+        },
+      ],
+    }).limit(2);
+    return companies.length === 1 ? companies[0].id : undefined;
+  };
+
+  public googleConfigurationController = async (_req: Request, res: Response) =>
+    sendResponseObject({
+      res,
+      data: { enabled: !!process.env.GOOGLE_CLIENT_ID },
+    });
+  public googleChallengeController = async (_req: Request, res: Response) => {
+    res.set("Cache-Control", "no-store");
+    return sendResponseObject({ res, data: await googleChallenge() });
+  };
+  public googleLoginController = async (req: Request, res: Response) => {
+    const portal = req.body.portal === undefined ? "employee" : req.body.portal;
+    if (!["admin", "employee"].includes(portal))
+      throw new ValidationException("Invalid login portal");
+    const identity = await verifyGoogleCredential(
+      req.body.credential,
+      req.body.nonce,
+    );
+    let user: any = await UserModel.findOne({
+      googleSubject: identity.subject,
+      isDeleted: { $ne: true },
+    }).select("+passwordHash +googleSubject");
+    if (!user) {
+      user = await UserModel.findOne({
+        email: identity.email,
+        isDeleted: { $ne: true },
+      }).select("+passwordHash +googleSubject");
+      assertLoginPortal(portal, !!user?.isPlatformAdmin);
+      if (user) {
+        if (user.googleSubject && user.googleSubject !== identity.subject)
+          throw new UnauthenticatedException(
+            "This email is connected to another Google identity",
+          );
+        if (
+          user.passwordHash &&
+          !(
+            typeof req.body.existingPassword === "string" &&
+            (await verifyPassword(req.body.existingPassword, user.passwordHash))
+          )
+        )
+          throw new ConflictException(
+            "An account already uses this email. Enter its existing password to connect Google",
+          );
+        const linked = await UserModel.findOneAndUpdate(
+          {
+            _id: user.id,
+            googleSubject: { $exists: false },
+            isActive: true,
+            isDeleted: { $ne: true },
+          },
+          { $set: { googleSubject: identity.subject } },
+          { new: true },
+        );
+        if (!linked)
+          throw new ConflictException("Account changed. Please sign in again");
+        user = linked as any;
+      } else {
+        try {
+          user = await UserModel.create({
+            loginId: identity.email,
+            email: identity.email,
+            googleSubject: identity.subject,
+            name: identity.name,
+            isActive: true,
+          });
+        } catch (error: any) {
+          if (error.code === 11000)
+            throw new ConflictException(
+              "Account already exists. Sign in again",
+            );
+          throw error;
+        }
+      }
+    }
+    assertLoginPortal(portal, !!user?.isPlatformAdmin);
+    if (!user || !user.isActive)
+      throw new UnauthenticatedException("Account is inactive");
+    return sendCompanySession(req, res, user, await this.defaultCompany(user));
   };
 
   public refreshController = async (

@@ -1,3 +1,4 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, {
   DocumentType,
   index,
@@ -15,7 +16,7 @@ export class DepartmentClass extends BaseModelClass<DepartmentClass> {
   public organizationId!: Ref<OrganizationClass>;
   @prop({ required: true, trim: true }) public name!: string;
   @prop({ trim: true }) public code?: string;
-  @prop() public headEmployeeId?: string;
+  @mongoRef("EmployeeClass") public headEmployeeId?: string;
   @prop({ default: "active", enum: ["active", "archived"] })
   public status!: string;
 

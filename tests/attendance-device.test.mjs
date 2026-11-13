@@ -62,6 +62,7 @@ function controller() {
   const constants = new Proxy({}, { get: (_target, name) => name });
   const scope = { exports: {}, Date, Intl, require(path) {
     if (path.endsWith("/constants")) return { constants: { fields: new Proxy({ Attendance: constants, OfficeLocation: constants }, { get: (target, name) => target[name] || name }) } };
+    if (path.endsWith("/mongoReferences")) return { mongoRef: noop, mongoRefs: noop };
     if (path.endsWith("/baseClasses")) return { BaseControllerClass: Base };
     if (path.endsWith("/deviceInfo")) return utilScope.exports;
     if (path.endsWith("/audit")) return { async writeAudit() {} };
@@ -98,6 +99,7 @@ test("device snapshots require an explicit admin serializer option", async () =>
   const fields = new Proxy({}, { get: (_target, key) => key });
   const scope = { exports: {}, Date, require(path) {
     if (path === "@typegoose/typegoose") return { __esModule: true, default: { getModelForClass: () => ({}) }, prop: noop, index: noop };
+    if (path.endsWith("/mongoReferences")) return { mongoRef: noop, mongoRefs: noop };
     if (path.endsWith("/baseClasses")) return { BaseModelClass: Base, baseModelOptions: {} };
     if (path.endsWith("/constants")) return { constants: { fields: { ...Object.fromEntries(["id", "createdAt", "updatedAt"].map((key) => [key, key])), Attendance: fields } } };
     if (path.endsWith("/deviceInfo")) return utilScope.exports;

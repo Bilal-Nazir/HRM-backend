@@ -1,3 +1,5 @@
+import mongoose from "mongoose";
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, {
   DocumentType,
   index,
@@ -14,13 +16,14 @@ const { getModelForClass } = TypeGoose;
   { unique: true },
 )
 export class RoleAssignmentClass extends BaseModelClass<RoleAssignmentClass> {
-  @prop({ required: true }) public organizationId!: string;
-  @prop({ required: true }) public employeeId!: string;
+  @mongoRef("OrganizationClass", true) public organizationId!: string;
+  @mongoRef("EmployeeClass", true) public employeeId!: string;
   @prop({ required: true, ref: () => RoleClass })
   public roleId!: Ref<RoleClass>;
   @prop({ required: true, enum: ["organization", "team", "self"] })
   public scopeType!: string;
-  @prop() public scopeId?: string;
+  // Polymorphic organization/team/employee scope, not a single-model ref.
+  @prop({ type: () => mongoose.Schema.Types.ObjectId }) public scopeId?: string;
   @prop() public activeFrom?: Date;
   @prop() public activeTo?: Date;
 

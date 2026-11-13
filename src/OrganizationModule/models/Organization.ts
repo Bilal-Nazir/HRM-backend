@@ -1,3 +1,4 @@
+import { mongoRef } from "../../common/mongoReferences";
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
@@ -5,14 +6,21 @@ import { constants } from "../../node-base/constants";
 const { getModelForClass } = TypeGoose;
 
 @index({ slug: 1 }, { unique: true })
+@index({ ownerUserId: 1, status: 1 })
 export class OrganizationClass extends BaseModelClass<OrganizationClass> {
+  @mongoRef("UserClass") public ownerUserId?: string;
+  @prop({ default: 1 }) public tenantSchemaVersion!: number;
+  @prop({ default: 0 }) public membershipVersion!: number;
   @prop({ required: true, trim: true }) public name!: string;
   @prop({ trim: true }) public legalName?: string;
   @prop({ required: true, trim: true, lowercase: true }) public slug!: string;
   @prop({ required: true, default: "UTC" }) public timezone!: string;
   @prop({ required: true, default: 0 }) public employeeSequence!: number;
   @prop({ default: "en" }) public defaultLocale?: string;
-  @prop({ default: "active", enum: ["active", "suspended", "archived"] })
+  @prop({
+    default: "active",
+    enum: ["active", "suspended", "archived", "provisioning"],
+  })
   public status!: string;
 
   public async display(
@@ -36,6 +44,7 @@ export class OrganizationClass extends BaseModelClass<OrganizationClass> {
       data = {
         [constants.fields.id]: this.id,
         [constants.fields.Organization.name]: this.name,
+        ownerUserId: this.ownerUserId,
         [constants.fields.Organization.legalName]: this.legalName,
         [constants.fields.Organization.slug]: this.slug,
         [constants.fields.Organization.timezone]: this.timezone,

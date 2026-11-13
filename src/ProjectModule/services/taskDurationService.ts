@@ -98,7 +98,7 @@ async function settleTimedStop(task: any, event: TimedStop) {
     {
       $setOnInsert: {
         ...scope,
-        actorUserId: "system",
+        actorType: "system",
         action: event.action,
         createdAt: endedAt,
         changes: {

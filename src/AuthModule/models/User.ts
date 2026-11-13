@@ -14,6 +14,19 @@ const { getModelForClass } = TypeGoose;
   { organizationId: 1, loginId: 1 },
   { unique: true, partialFilterExpression: { isDeleted: false } },
 )
+@index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $type: "string" } } },
+)
+@index(
+  { googleSubject: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { googleSubject: { $type: "string" } },
+  },
+)
+@index({ loginId: 1, isDeleted: 1 })
+@index({ legacyLoginIds: 1 }, { sparse: true })
 export class UserClass extends BaseModelClass<UserClass> {
   @prop({ ref: () => OrganizationClass })
   public organizationId?: Ref<OrganizationClass>;
@@ -21,7 +34,12 @@ export class UserClass extends BaseModelClass<UserClass> {
   @prop({ required: true, trim: true, lowercase: true })
   public loginId!: string;
 
-  @prop({ required: true, select: false })
+  @prop({ trim: true, lowercase: true }) public email?: string;
+  @prop({ trim: true }) public name?: string;
+  @prop({ select: false }) public googleSubject?: string;
+  @prop({ type: () => [String], default: [] }) public legacyLoginIds!: string[];
+
+  @prop({ select: false })
   public passwordHash!: string;
 
   @prop({ default: 0 })

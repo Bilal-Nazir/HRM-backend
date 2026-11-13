@@ -1,3 +1,4 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { AttendanceDevice } from "./AttendanceDevice";
@@ -9,11 +10,11 @@ const { getModelForClass } = TypeGoose;
 )
 @index({ organizationId: 1, status: 1, createdAt: -1 })
 export class LocationReviewRequestClass extends BaseModelClass<LocationReviewRequestClass> {
-  @prop({ required: true }) organizationId!: string;
-  @prop({ required: true }) employeeId!: string;
-  @prop({ required: true }) requestedByUserId!: string;
+  @mongoRef("OrganizationClass", true) organizationId!: string;
+  @mongoRef("EmployeeClass", true) employeeId!: string;
+  @mongoRef("UserClass", true) requestedByUserId!: string;
   @prop({ enum: ["check_in", "check_out"], required: true }) action!: string;
-  @prop() attendanceId?: string;
+  @mongoRef("AttendanceClass") attendanceId?: string;
   @prop({ required: true, min: -90, max: 90 }) latitude!: number;
   @prop({ required: true, min: -180, max: 180 }) longitude!: number;
   @prop({ required: true }) reason!: string;
@@ -25,11 +26,11 @@ export class LocationReviewRequestClass extends BaseModelClass<LocationReviewReq
   })
   status!: string;
   @prop({ default: true }) active!: boolean;
-  @prop() reviewedByUserId?: string;
+  @mongoRef("UserClass") reviewedByUserId?: string;
   @prop() reviewedAt?: Date;
   @prop() reviewComment?: string;
   @prop() approvedLatitude?: number;
   @prop() approvedLongitude?: number;
-  @prop() resultAttendanceId?: string;
+  @mongoRef("AttendanceClass") resultAttendanceId?: string;
 }
 export default getModelForClass(LocationReviewRequestClass, baseModelOptions);

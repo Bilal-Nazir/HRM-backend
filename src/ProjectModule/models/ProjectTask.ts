@@ -1,30 +1,41 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 const { getModelForClass } = TypeGoose;
 
-@index({ organizationId: 1, projectId: 1, issueNumber: 1 }, { unique: true, partialFilterExpression: { isDeleted: false } })
+@index(
+  { organizationId: 1, projectId: 1, issueNumber: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } },
+)
 @index({ organizationId: 1, projectId: 1, workflowStatusId: 1, updatedAt: -1 })
 @index({ organizationId: 1, assigneeEmployeeIds: 1, updatedAt: -1 })
-@index({ organizationId: 1, projectId: 1, title: "text", key: "text", labels: "text" })
+@index({
+  organizationId: 1,
+  projectId: 1,
+  title: "text",
+  key: "text",
+  labels: "text",
+})
 @index({ reminder24hSentAt: 1, dueDate: 1 })
 @index({ autoCompleteAt: 1, isDeleted: 1 })
 @index({ autoCompletionPending: 1 })
 @index({ autoPausePending: 1 })
 export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
-  @prop({ required: true }) organizationId!: string;
-  @prop({ required: true }) projectId!: string;
+  @mongoRef("OrganizationClass", true) organizationId!: string;
+  @mongoRef("ProjectClass", true) projectId!: string;
   @prop({ required: true }) issueNumber!: number;
   @prop({ required: true }) key!: string;
   @prop({ enum: ["story", "task"], default: "task" }) type!: string;
   @prop({ required: true, trim: true }) title!: string;
   @prop({ trim: true }) description?: string;
-  @prop() parentStoryId?: string;
-  @prop({ type: () => [String], default: [] }) assigneeEmployeeIds!: string[];
+  @mongoRef("ProjectTaskClass") parentStoryId?: string;
+  @mongoRefs("EmployeeClass") assigneeEmployeeIds!: string[];
   // Admin accounts are organization users and may not have an employee record.
-  @prop() reporterEmployeeId?: string;
-  @prop({ required: true }) createdBy!: string;
-  @prop({ enum: ["low", "medium", "high", "critical"], default: "medium" }) priority!: string;
-  @prop({ required: true }) workflowStatusId!: string;
+  @mongoRef("EmployeeClass") reporterEmployeeId?: string;
+  @mongoRef("UserClass", true) createdBy!: string;
+  @prop({ enum: ["low", "medium", "high", "critical"], default: "medium" })
+  priority!: string;
+  @mongoRef("WorkflowStatusClass", true) workflowStatusId!: string;
   @prop() startDate?: Date;
   @prop() dueDate?: Date;
   @prop() reminder24hSentAt?: Date;
@@ -40,15 +51,15 @@ export class ProjectTaskClass extends BaseModelClass<ProjectTaskClass> {
   // Persist settlement data so a process restart cannot lose the work log/history.
   @prop() autoCompletionId?: string;
   @prop() autoCompletionStartedAt?: Date;
-  @prop() autoCompletionFromStatusId?: string;
+  @mongoRef("WorkflowStatusClass") autoCompletionFromStatusId?: string;
   @prop() autoCompletionPending?: boolean;
   @prop() autoPaused?: boolean;
   @prop() autoPausedAt?: Date;
   @prop() durationExtensionRequired?: boolean;
   @prop() autoPauseId?: string;
   @prop() autoPauseStartedAt?: Date;
-  @prop() autoPauseFromStatusId?: string;
-  @prop() autoPauseStatusId?: string;
+  @mongoRef("WorkflowStatusClass") autoPauseFromStatusId?: string;
+  @mongoRef("WorkflowStatusClass") autoPauseStatusId?: string;
   @prop() autoPausePending?: boolean;
 }
 export default getModelForClass(ProjectTaskClass, baseModelOptions);

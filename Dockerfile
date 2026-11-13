@@ -12,6 +12,7 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app/package*.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/build ./build
+COPY --chown=node:node scripts ./scripts
 RUN mkdir -p logs output uploads/project-attachments && chown -R node:node logs output uploads
 USER node
 EXPOSE 8080

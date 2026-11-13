@@ -1,3 +1,4 @@
+import { assertTenantMigrationReady } from "../TenantModule/services/migrationReadiness";
 import cors from "cors";
 import express, { Express, NextFunction, Request, Response } from "express";
 import config from "../common/config";
@@ -41,6 +42,7 @@ const startServer = async () => {
 
   // Do not report healthy or accept requests before storage and bootstrap are ready.
   await Promise.all([MongoDatabase.initialize(), RedisDatabase.initialize()]);
+  await assertTenantMigrationReady();
   await syncUniqueIndexesScript();
   await createFirstAdminScript();
   await createDefaultLeaveTypesScript();

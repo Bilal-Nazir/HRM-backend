@@ -1,13 +1,15 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
 const { getModelForClass } = TypeGoose;
 @index({ organizationId: 1, employeeId: 1, startDate: -1 })
 export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
-  @prop({ required: true }) public organizationId!: string;
-  @prop({ required: true }) public employeeId!: string;
-  @prop() public leaveTypeId?: string;
-  @prop({ default: "leave", enum: ["leave", "work_from_home"] }) public requestKind!: string;
+  @mongoRef("OrganizationClass", true) public organizationId!: string;
+  @mongoRef("EmployeeClass", true) public employeeId!: string;
+  @mongoRef("LeaveTypeClass") public leaveTypeId?: string;
+  @prop({ default: "leave", enum: ["leave", "work_from_home"] })
+  public requestKind!: string;
   @prop({ required: true }) public startDate!: Date;
   @prop({ required: true }) public endDate!: Date;
   @prop({ required: true, min: 0.5 }) public totalDays!: number;
@@ -17,12 +19,12 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
     enum: ["pending", "approved", "rejected", "cancelled"],
   })
   public status!: string;
-  @prop() public reviewedByEmployeeId?: string;
+  @mongoRef("EmployeeClass") public reviewedByEmployeeId?: string;
   @prop() public reviewedAt?: Date;
   @prop() public reviewComment?: string;
   @prop() public managerComment?: string;
   @prop() public managerCommentedAt?: Date;
-  @prop() public managerCommentedByEmployeeId?: string;
+  @mongoRef("EmployeeClass") public managerCommentedByEmployeeId?: string;
 
   public async display(
     this: DocumentType<LeaveRequestClass>,

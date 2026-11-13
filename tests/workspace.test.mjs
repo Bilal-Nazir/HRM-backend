@@ -38,6 +38,9 @@ const { default: Attendance } = await import(
 const { ensureDefaultLeaveTypes } = await import(
   root + "database/scripts/createDefaultLeaveTypesScript.js"
 );
+const { default: Membership } = await import(root + "TenantModule/models/CompanyMembership.js");
+const { default: Role } = await import(root + "AccessModule/models/Role.js");
+const { default: RoleAssignment } = await import(root + "AccessModule/models/RoleAssignment.js");
 const { hashPassword, verifyPassword } = await import(
   root + "AuthModule/utils/password.js"
 );
@@ -91,6 +94,9 @@ test("workspace APIs, organization boundaries, password changes and attendance",
         workEmail: loginId + "@example.test",
         employmentStatus: "active",
       });
+      await Membership.create({ organizationId, userId: user.id, employeeId: employee.id });
+      if (platform) await Organization.updateOne({ _id: organizationId }, { $set: { ownerUserId: user.id } });
+      else { const role = await Role.create({ organizationId, name: loginId + " role", permissions }); await RoleAssignment.create({ organizationId, employeeId: employee.id, roleId: role.id, scopeType: "organization" }); }
       const payload = {
         userId: user.id,
         employeeId: employee.id,
@@ -584,13 +590,15 @@ test("workspace APIs, organization boundaries, password changes and attendance",
       assert.equal(cleared.body.data.employee.jobTitle, undefined);
       assert.equal(cleared.body.data.employee.phone, undefined);
       assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { employmentStatus: "suspended" })).status, 200);
-      assert.equal((await User.findById(target.user.id)).isActive, false);
+      assert.equal((await User.findById(target.user.id)).isActive, true);
+      assert.equal((await Membership.findOne({ organizationId: org.id, userId: target.user.id })).status, "suspended");
       assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "PATCH", { employmentStatus: "active" })).status, 200);
       assert.equal((await User.findById(target.user.id)).isActive, true);
       assert.equal((await request(`/employee/${target.payload.employeeId}`, admin, "DELETE")).status, 200);
       assert.equal((await Employee.findById(target.payload.employeeId)).isDeleted, true);
-      assert.equal((await User.findById(target.user.id)).isActive, false);
-      assert.equal((await User.findById(target.user.id)).isDeleted, true);
+      assert.equal((await User.findById(target.user.id)).isActive, true);
+      assert.equal((await Membership.findOne({ organizationId: org.id, userId: target.user.id })).status, "suspended");
+      assert.equal((await User.findById(target.user.id)).isDeleted, false);
       assert.equal((await request("/employee/view", admin)).body.data.employees.some((item) => item.id === target.payload.employeeId), false);
 
       const replacement = await request("/employee/create", admin, "POST", {

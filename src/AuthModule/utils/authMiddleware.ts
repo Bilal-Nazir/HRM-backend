@@ -3,14 +3,32 @@ import {
   ForbiddenException,
   UnauthenticatedException,
 } from "../../node-base/utils";
-import UserModel from "../models/User";
+import { currentCompanyContext } from "../../TenantModule/services/companyContext";
 import { verifyStoredToken } from "./session";
 import { AuthenticatedRequest } from "./types";
 
+const verifiedRequests = new WeakMap<
+  AuthenticatedRequest,
+  { auth: import("./types").AuthUser; accountOnly: boolean }
+>();
+
 export const authMiddleware =
-  (requiredPermissions: string[] = []) =>
+  (requiredPermissions: string[] = [], allowAccountOnly = false) =>
   async (req: AuthenticatedRequest, _res: Response, next: NextFunction) => {
     try {
+      const cached = verifiedRequests.get(req);
+      if (cached && (allowAccountOnly || !cached.accountOnly)) {
+        if (
+          !cached.auth.permissions.includes("*") &&
+          requiredPermissions.some(
+            (permission) => !cached.auth.permissions.includes(permission),
+          )
+        )
+          throw new ForbiddenException();
+        req.auth = cached.auth;
+        next();
+        return;
+      }
       const header = req.headers.authorization;
       const accessToken = header?.startsWith("Bearer ")
         ? header.slice(7)
@@ -18,27 +36,20 @@ export const authMiddleware =
       if (!accessToken) throw new UnauthenticatedException();
       const payload = await verifyStoredToken(accessToken, "access");
       if (!payload) throw new UnauthenticatedException();
-      const user = await UserModel.findOne({
-        _id: payload.userId,
-        isActive: true,
-        isDeleted: { $ne: true },
-      });
+      const { auth } = await currentCompanyContext(payload, allowAccountOnly);
       if (
-        !user ||
-        (user.credentialVersion || 0) !== (payload.credentialVersion || 0)
-      )
-        throw new UnauthenticatedException(
-          "Account is inactive or unavailable",
-        );
-      if (
-        !payload.permissions.includes("*") &&
+        !auth.permissions.includes("*") &&
         requiredPermissions.some(
-          (permission) => !payload.permissions.includes(permission),
+          (permission) => !auth.permissions.includes(permission),
         )
       ) {
         throw new ForbiddenException();
       }
-      req.auth = payload;
+      req.auth = { ...auth, sessionId: payload.sessionId };
+      verifiedRequests.set(req, {
+        auth: req.auth,
+        accountOnly: allowAccountOnly,
+      });
       next();
     } catch (error) {
       if (

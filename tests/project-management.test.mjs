@@ -19,6 +19,9 @@ const { default: Project } = await import(root + "ProjectModule/models/Project.j
 const { default: ProjectMember } = await import(root + "ProjectModule/models/ProjectMember.js");
 const { default: ProjectTask } = await import(root + "ProjectModule/models/ProjectTask.js");
 const { default: WorkflowStatus } = await import(root + "ProjectModule/models/WorkflowStatus.js");
+const { default: Membership } = await import(root + "TenantModule/models/CompanyMembership.js");
+const { default: Role } = await import(root + "AccessModule/models/Role.js");
+const { default: RoleAssignment } = await import(root + "AccessModule/models/RoleAssignment.js");
 const { hashPassword } = await import(root + "AuthModule/utils/password.js");
 const { generateSessionTokens } = await import(root + "AuthModule/utils/session.js");
 
@@ -33,6 +36,9 @@ test("project management permissions, assignments, transitions and tenant isolat
     async function account(loginId, organizationId, permissions) {
       const user = await User.create({ organizationId, loginId, passwordHash:await hashPassword("Project-test-42"), isActive:true });
       const employee = await Employee.create({ organizationId, userId:user.id, employeeCode:loginId, firstName:loginId, lastName:"Person", workEmail:`${loginId}@test.invalid`, employmentStatus:"active" });
+      await Membership.create({ organizationId, userId: user.id, employeeId: employee.id });
+      if (permissions.includes("*")) await Organization.updateOne({ _id: organizationId }, { $set: { ownerUserId: user.id } });
+      else { const role = await Role.create({ organizationId, name: loginId + " role", permissions }); await RoleAssignment.create({ organizationId, employeeId: employee.id, roleId: role.id, scopeType: "organization" }); }
       return { user, employee, ...(await generateSessionTokens({ userId:user.id, employeeId:employee.id, organizationId, permissions, credentialVersion:0 })) };
     }
     const admin=await account("admin",org.id,["*"]), member=await account("member",org.id,["project.read","project.task"]), second=await account("second",org.id,["project.read","project.task"]), outsider=await account("outsider",otherOrg.id,["*"]);
@@ -47,7 +53,7 @@ test("project management permissions, assignments, transitions and tenant isolat
     assert.equal((await request(`/projects/${projectId}/workflow/durations`,admin,"PATCH",{taskDurationOptionsMinutes:[30,60],autoCompleteStatusId:done.id})).status,200);
     const taskResult=await request(`/projects/${projectId}/tasks`,member,"POST",{title:"Implement attendance API",durationMinutes:30,assigneeEmployeeIds:[member.employee.id,second.employee.id]});assert.equal(taskResult.status,201);const task=taskResult.body.data.task;assert.equal(task.assigneeEmployeeIds.length,2);
     assert.equal((await request(`/projects/${projectId}/tasks`,member,"POST",{title:"Bad assignment",assigneeEmployeeIds:[outsider.employee.id]})).status,422);
-    assert.equal((await request(`/projects/${projectId}/tasks/${task.id}/status`,member,"PATCH",{workflowStatusId:done.id})).status,409);
+    assert.equal((await request(`/projects/${projectId}/tasks/${task.id}/status`,member,"PATCH",{workflowStatusId:done.id})).status,200);
     assert.equal((await request(`/projects/${projectId}/tasks/${task.id}/status`,member,"PATCH",{workflowStatusId:progress.id})).status,200);
     assert.equal((await request(`/projects/${projectId}/tasks/${task.id}/comments`,second,"POST",{body:"Ready for review"})).status,201);
     const detail=await request(`/projects/${projectId}/tasks/${task.id}`,member);assert.equal(detail.body.data.comments.length,1);assert.ok(detail.body.data.activity.some(x=>x.action==="task.status_changed"));

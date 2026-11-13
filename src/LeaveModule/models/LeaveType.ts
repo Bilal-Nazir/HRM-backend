@@ -1,10 +1,11 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
 const { getModelForClass } = TypeGoose;
 @index({ organizationId: 1, name: 1 }, { unique: true })
 export class LeaveTypeClass extends BaseModelClass<LeaveTypeClass> {
-  @prop({ required: true }) public organizationId!: string;
+  @mongoRef("OrganizationClass", true) public organizationId!: string;
   @prop({ required: true, trim: true }) public name!: string;
   @prop({ trim: true }) public code?: string;
   @prop({ default: true }) public isPaid!: boolean;

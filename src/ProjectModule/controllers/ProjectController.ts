@@ -44,6 +44,7 @@ const serialize = (doc: any) => {
   return { id: String(_id), ...rest };
 };
 const isAdmin = (req: AuthenticatedRequest) => req.auth!.permissions.includes("*") || req.auth!.permissions.includes("project.manage");
+const isCompanyAdmin = (req: AuthenticatedRequest) => !!(req.auth!.isCompanyOwner || req.auth!.isPlatformAdmin || req.auth!.permissions.includes("*"));
 const param = (req: AuthenticatedRequest, name: string) => String(req.params[name]);
 const activity = (req: AuthenticatedRequest, projectId: string, action: string, taskId?: string, changes?: Record<string, unknown>) =>
   ProjectActivityModel.create({ organizationId: req.auth!.organizationId!, projectId, taskId, actorUserId: req.auth!.userId, actorEmployeeId: req.auth!.employeeId, action, changes });
@@ -437,7 +438,7 @@ export const getTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project, member } = await projectAccess(req, param(req, "id"));
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
   const page = (value: unknown) => Math.max(1, Math.min(100000, Math.floor(Number(value) || 1)));
-  const data = await readTaskDetails({ organizationId: req.auth!.organizationId!, task, project, canEdit: project.status !== "archived" && (isAdmin(req) || member?.role !== "viewer"), canAdministerTask: isAdmin(req), activityPage: page(req.query.activityPage), worklogPage: page(req.query.worklogPage) });
+  const data = await readTaskDetails({ organizationId: req.auth!.organizationId!, task, project, canEdit: project.status !== "archived" && (isAdmin(req) || member?.role !== "viewer"), canAdministerTask: isCompanyAdmin(req), activityPage: page(req.query.activityPage), worklogPage: page(req.query.worklogPage) });
   return sendResponseObject({ res, data });
 };
 
@@ -451,7 +452,7 @@ export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
   if (changes.title !== undefined) changes.title = clean(changes.title, "Title", 180);
   if (req.body.assigneeEmployeeIds !== undefined) { before.assigneeEmployeeIds = task.assigneeEmployeeIds; changes.assigneeEmployeeIds = await validAssignees(req, param(req, "id"), req.body.assigneeEmployeeIds); }
   if (req.body.durationMinutes !== undefined) {
-    if (task.durationExtensionRequired && req.body.durationMinutes !== task.durationMinutes && !isAdmin(req)) throw new ForbiddenException("Only an admin can increase the duration after an automatic pause");
+    if (task.durationExtensionRequired && req.body.durationMinutes !== task.durationMinutes && !isCompanyAdmin(req)) throw new ForbiddenException("Only an admin can increase the duration after an automatic pause");
     before.durationMinutes = task.durationMinutes;
     changes.durationMinutes = durationChoice(project, req.body.durationMinutes, task.durationMinutes);
     const tracked = (task.accumulatedSeconds || 0) + (task.timeStartedAt ? Math.max(0, Math.floor((Date.now() - +task.timeStartedAt) / 1000)) : 0);
@@ -480,7 +481,7 @@ export const updateTask = async (req: AuthenticatedRequest, res: Response) => {
 export const deleteTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
-  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can delete an automatically paused task");
+  if (task.autoPaused && !isCompanyAdmin(req)) throw new ForbiddenException("Only an admin can delete an automatically paused task");
   task.isDeleted = true;
   await task.save();
   await activity(req, project.id, "task.deleted", task.id, { key: task.key, title: task.title });
@@ -491,7 +492,7 @@ export const restoreTask = async (req: AuthenticatedRequest, res: Response) => {
   await projectAccess(req, param(req, "id"), true);
   const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId"), "task ID"), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true });
   if (!task) throw new ObjectNotFoundException("Deleted task");
-  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can restore an automatically paused task");
+  if (task.autoPaused && !isCompanyAdmin(req)) throw new ForbiddenException("Only an admin can restore an automatically paused task");
   task.isDeleted = false;
   await task.save();
   await activity(req, param(req, "id"), "task.restored", task.id, { key: task.key, title: task.title });
@@ -503,7 +504,7 @@ export const permanentlyDeleteTask = async (req: AuthenticatedRequest, res: Resp
   if (!isAdmin(req) && member?.role !== "project_manager") throw new ForbiddenException("Only a project manager can permanently delete tasks");
   const task = await ProjectTaskModel.findOne({ _id: object(param(req, "taskId"), "task ID"), organizationId: req.auth!.organizationId, projectId: req.params.id, isDeleted: true });
   if (!task) throw new ObjectNotFoundException("Deleted task");
-  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can delete an automatically paused task");
+  if (task.autoPaused && !isCompanyAdmin(req)) throw new ForbiddenException("Only an admin can delete an automatically paused task");
   const attachments = await ProjectAttachmentModel.find({ organizationId: req.auth!.organizationId, projectId: req.params.id, taskId: task.id }).select("storedName").lean();
   await activity(req, param(req, "id"), "task.permanently_deleted", task.id, { key: task.key, title: task.title });
   await Promise.all([
@@ -519,7 +520,7 @@ export const permanentlyDeleteTask = async (req: AuthenticatedRequest, res: Resp
 export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   const { project } = await projectAccess(req, param(req, "id"), true);
   const task = await visibleTask(req, param(req, "id"), param(req, "taskId"));
-  if (task.autoPaused && !isAdmin(req)) throw new ForbiddenException("Only an admin can move an automatically paused task");
+  if (task.autoPaused && !isCompanyAdmin(req)) throw new ForbiddenException("Only an admin can move an automatically paused task");
   const completed = await pauseTimedTaskIfDue(task);
   if (completed) return sendResponseObject({ res, data: { task: serialize(completed) } });
   const snapshot = task.toObject();

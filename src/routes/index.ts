@@ -1,4 +1,9 @@
 import { Express, Request, Response } from "express";
+import TenantRouter from "../TenantModule/routes";
+import {
+  authMiddleware,
+  requireOrganization,
+} from "../AuthModule/utils/authMiddleware";
 import EmployeeRouter from "../EmployeeModule/routes";
 import AuthRouter from "../AuthModule/routes";
 import OrganizationRouter from "../OrganizationModule/routes";
@@ -12,6 +17,23 @@ import ProjectRouter from "../ProjectModule/routes";
 import NotificationRouter from "../NotificationModule/routes";
 
 const registerRoutes = (app: Express) => {
+  app.use("/companies", TenantRouter);
+  app.use(
+    [
+      "/employee",
+      "/organization",
+      "/access",
+      "/attendance",
+      "/leave",
+      "/audit",
+      "/terms",
+      "/announcements",
+      "/projects",
+      "/notifications",
+    ],
+    authMiddleware(),
+    requireOrganization,
+  );
   app.use("/employee", EmployeeRouter);
   app.use("/auth", AuthRouter);
   app.use("/organization", OrganizationRouter);

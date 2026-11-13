@@ -1,3 +1,4 @@
+import MembershipModel from "../../TenantModule/models/CompanyMembership";
 import { NextFunction, Response } from "express";
 import { DocumentType } from "@typegoose/typegoose";
 import RoleAssignmentModel from "../../AccessModule/models/RoleAssignment";
@@ -25,6 +26,22 @@ import { constants } from "../../node-base/constants";
 
 const selfEditableFields = ["phone", "personalEmail", "timezone"];
 const employeeFields = constants.fields.Employee;
+async function employeeDisplay(
+  employee: any,
+  req: AuthenticatedRequest,
+  detail = false,
+) {
+  const canReadPrivate =
+    req.auth!.isCompanyOwner ||
+    req.auth!.isPlatformAdmin ||
+    employee.id === req.auth!.employeeId;
+  return employee.display({
+    detail: detail && canReadPrivate,
+    excludes: canReadPrivate
+      ? []
+      : ["phone", "personalEmail", "metadata", "userId"],
+  });
+}
 
 export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> {
   _Model = EmployeeModel;
@@ -45,7 +62,11 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       const prefix = organization.slug.trim().toLowerCase();
       const employeeCode = `${prefix}-${String(organization.employeeSequence).padStart(3, "0")}`;
       const [employeeExists, loginExists] = await Promise.all([
-        EmployeeModel.exists({ organizationId, employeeCode, isDeleted: false }),
+        EmployeeModel.exists({
+          organizationId,
+          employeeCode,
+          isDeleted: false,
+        }),
         UserModel.exists({
           organizationId,
           loginId: employeeCode.toLowerCase(),
@@ -148,6 +169,10 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     next: NextFunction,
   ) => {
     const organizationId = req.auth!.organizationId!;
+    if (req.body.roleName === "Organization Admin")
+      throw new ValidationException(
+        "Use ownership transfer to change the single company admin",
+      );
     const requestData = { ...req.body };
     delete requestData.employeeCode;
     const postData = {
@@ -248,25 +273,47 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       data: validatedData,
     });
 
-    const user = (await this.dbInsertRecord({
-      Collection: UserModel,
-      data: {
-        organizationId,
-        loginId: String(validatedData.employeeCode).trim().toLowerCase(),
-        passwordHash: await hashPassword(validatedData.password),
-        isActive: true,
-      },
-    })) as any;
-
+    const email = String(validatedData.workEmail).trim().toLowerCase();
+    // An admin cannot replace a password or activate an existing account in a
+    // second company. Existing accounts join through an email-bound invitation.
+    let user = await UserModel.findOne({ email, isDeleted: { $ne: true } });
+    const existingAccount = !!user;
+    if (!user) {
+      try {
+        user = await UserModel.create({
+          organizationId,
+          loginId: String(validatedData.employeeCode).trim().toLowerCase(),
+          email,
+          name: `${validatedData.firstName} ${validatedData.lastName}`,
+          passwordHash: await hashPassword(validatedData.password),
+          isActive: true,
+        });
+      } catch (error: any) {
+        if (error.code === 11000)
+          throw new ConflictException(
+            "This account was just created. Try again to invite it",
+          );
+        throw error;
+      }
+    }
     delete validatedData.password;
-
     const obj = await this.dbInsertRecord({
       data: {
         ...validatedData,
-        userId: user.id,
-        employmentStatus: validatedData.employmentStatus || "active",
+        workEmail: email,
+        ...(!existingAccount && { userId: user.id }),
+        employmentStatus: existingAccount
+          ? "invited"
+          : validatedData.employmentStatus || "active",
       },
     });
+    if (!existingAccount)
+      await MembershipModel.create({
+        organizationId,
+        userId: user.id,
+        employeeId: obj.id,
+        status: obj.employmentStatus === "active" ? "active" : "suspended",
+      });
 
     const employeeRole = await this.dbReadRecord({
       Collection: RoleModel,
@@ -304,7 +351,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       res,
       code: 201,
       data: {
-        [this._modelName]: await obj.display({ detail: true }),
+        [this._modelName]: await employeeDisplay(obj, req, true),
       },
     });
   };
@@ -337,8 +384,18 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     });
 
     if (req.query.search) {
-      const search = String(req.query.search).trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (search) readFilter.$or = ["firstName", "lastName", "workEmail", "employeeCode", "jobTitle"].map((field) => ({ [field]: { $regex: search, $options: "i" } }));
+      const search = String(req.query.search)
+        .trim()
+        .slice(0, 80)
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (search)
+        readFilter.$or = [
+          "firstName",
+          "lastName",
+          "workEmail",
+          "employeeCode",
+          "jobTitle",
+        ].map((field) => ({ [field]: { $regex: search, $options: "i" } }));
     }
 
     const objs = await this.dbReadRecords({
@@ -358,7 +415,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       res,
       data: {
         [this._modelNamePlural]: await Promise.all(
-          objs.map((obj) => obj.display()),
+          objs.map((obj) => employeeDisplay(obj, req)),
         ),
         totalCount,
         page,
@@ -391,7 +448,7 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     return sendResponseObject({
       res,
       data: {
-        [this._modelName]: await obj.display({ detail: true }),
+        [this._modelName]: await employeeDisplay(obj, req, true),
       },
     });
   };
@@ -450,10 +507,21 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
         [employeeFields.personalEmail]: [{ rule: "format", type: "email" }],
         [employeeFields.timezone]: [{ rule: "datatype", datatype: "String" }],
         [employeeFields.jobTitle]: [{ rule: "datatype", datatype: "String" }],
-        [employeeFields.firstName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
-        [employeeFields.lastName]: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 64 }],
+        [employeeFields.firstName]: [
+          { rule: "datatype", datatype: "String" },
+          { rule: "maxLength", length: 64 },
+        ],
+        [employeeFields.lastName]: [
+          { rule: "datatype", datatype: "String" },
+          { rule: "maxLength", length: 64 },
+        ],
         [employeeFields.workEmail]: [{ rule: "format", type: "email" }],
-        [employeeFields.employmentType]: [{ rule: "choices", options: ["full-time", "part-time", "contract", "intern"] }],
+        [employeeFields.employmentType]: [
+          {
+            rule: "choices",
+            options: ["full-time", "part-time", "contract", "intern"],
+          },
+        ],
         [employeeFields.departmentId]: [{ rule: "format", type: "id" }],
         [employeeFields.teamId]: [{ rule: "format", type: "id" }],
         [employeeFields.managerEmployeeId]: [{ rule: "format", type: "id" }],
@@ -483,26 +551,61 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
       employeeId,
     });
 
-    for (const field of [employeeFields.firstName, employeeFields.lastName, employeeFields.workEmail]) {
-      if (Object.prototype.hasOwnProperty.call(requestData, field) && !String(requestData[field] || "").trim()) {
-        return next(new ValidationException({ [field]: "This field is required" }));
+    for (const field of [
+      employeeFields.firstName,
+      employeeFields.lastName,
+      employeeFields.workEmail,
+    ]) {
+      if (
+        Object.prototype.hasOwnProperty.call(requestData, field) &&
+        !String(requestData[field] || "").trim()
+      ) {
+        return next(
+          new ValidationException({ [field]: "This field is required" }),
+        );
       }
     }
 
     // The shared validator omits empty optional values. An explicit blank from
     // the edit form means the admin wants to clear that field, not leave it unchanged.
-    for (const field of [employeeFields.phone, employeeFields.personalEmail, employeeFields.jobTitle, employeeFields.timezone]) {
-      if (Object.prototype.hasOwnProperty.call(requestData, field) && !String(requestData[field] || "").trim()) postData[field] = undefined;
+    for (const field of [
+      employeeFields.phone,
+      employeeFields.personalEmail,
+      employeeFields.jobTitle,
+      employeeFields.timezone,
+    ]) {
+      if (
+        Object.prototype.hasOwnProperty.call(requestData, field) &&
+        !String(requestData[field] || "").trim()
+      )
+        postData[field] = undefined;
     }
 
     if (postData.workEmail) {
-      const duplicate = await EmployeeModel.exists({ organizationId, workEmail: String(postData.workEmail).toLowerCase(), _id: { $ne: employeeId }, isDeleted: { $ne: true } });
-      if (duplicate) return next(new ConflictException("Work email is already in use"));
+      const duplicate = await EmployeeModel.exists({
+        organizationId,
+        workEmail: String(postData.workEmail).toLowerCase(),
+        _id: { $ne: employeeId },
+        isDeleted: { $ne: true },
+      });
+      if (duplicate)
+        return next(new ConflictException("Work email is already in use"));
     }
 
     const existingObj = postData[
       this._modelName
     ] as DocumentType<EmployeeClass>;
+    if (
+      existingObj.userId &&
+      postData.employmentStatus &&
+      postData.employmentStatus !== "active"
+    ) {
+      const company = await OrganizationModel.findById(organizationId);
+      if (String(company?.ownerUserId) === String(existingObj.userId))
+        throw new ForbiddenException(
+          "Transfer ownership before suspending the company admin",
+        );
+    }
     const before = existingObj.toObject();
     delete postData.id;
     delete postData[this._modelName];
@@ -515,9 +618,14 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
 
     const accessDisabledStatuses = ["suspended", "terminated", "archived"];
     if (obj?.userId && postData.employmentStatus) {
-      const shouldBeActive = !accessDisabledStatuses.includes(obj.employmentStatus);
-      await UserModel.updateOne({ _id: obj.userId, organizationId }, { $set: { isActive: shouldBeActive } });
-      if (!shouldBeActive) await revokeUserSessions(String(obj.userId));
+      const shouldBeActive = !accessDisabledStatuses.includes(
+        obj.employmentStatus,
+      );
+      await MembershipModel.updateOne(
+        { organizationId, userId: obj.userId },
+        { $set: { status: shouldBeActive ? "active" : "suspended" } },
+      );
+      // Membership is rechecked on every request. Other companies stay signed in.
     }
 
     await writeAudit({
@@ -535,30 +643,60 @@ export class EmployeeControllerClass extends BaseControllerClass<EmployeeClass> 
     return sendResponseObject({
       res,
       data: {
-        [this._modelName]: await obj!.display({ detail: true }),
+        [this._modelName]: await employeeDisplay(obj!, req, true),
       },
     });
   };
 
-  public deleteController = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  public deleteController = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
     const organizationId = req.auth!.organizationId!;
-    if (!req.auth!.permissions.some((permission) => ["*", "employee.update.employment"].includes(permission))) return next(new ForbiddenException());
-    if (req.params.id === req.auth!.employeeId) return next(new ForbiddenException("You cannot archive your own employee account"));
-    const obj = await EmployeeModel.findOne({ _id: req.params.id, organizationId, isDeleted: { $ne: true } });
+    if (
+      !req.auth!.permissions.some((permission) =>
+        ["*", "employee.update.employment"].includes(permission),
+      )
+    )
+      return next(new ForbiddenException());
+    if (req.params.id === req.auth!.employeeId)
+      return next(
+        new ForbiddenException("You cannot archive your own employee account"),
+      );
+    const obj = await EmployeeModel.findOne({
+      _id: req.params.id,
+      organizationId,
+      isDeleted: { $ne: true },
+    });
     if (!obj) return next(new ObjectNotFoundException("Employee"));
+    const company = await OrganizationModel.findById(organizationId);
+    if (obj.userId && String(company?.ownerUserId) === String(obj.userId))
+      throw new ForbiddenException(
+        "Transfer ownership before archiving the company admin",
+      );
     const before = obj.toObject();
     obj.isDeleted = true;
     obj.employmentStatus = "archived";
     await obj.save();
-    if (obj.userId) {
-      await UserModel.updateOne(
-        { _id: obj.userId },
-        { $set: { isActive: false, isDeleted: true } },
+    if (obj.userId)
+      await MembershipModel.updateOne(
+        { organizationId, userId: obj.userId },
+        { $set: { status: "suspended" } },
       );
-      await revokeUserSessions(String(obj.userId));
-    }
-    await writeAudit({ organizationId, actorUserId: req.auth!.userId, action: "employee.archived", entityType: "Employee", entityId: obj.id, before, after: obj.toObject() });
-    return sendResponseObject({ res, data: { employee: await obj.display({ detail: true }) } });
+    await writeAudit({
+      organizationId,
+      actorUserId: req.auth!.userId,
+      action: "employee.archived",
+      entityType: "Employee",
+      entityId: obj.id,
+      before,
+      after: obj.toObject(),
+    });
+    return sendResponseObject({
+      res,
+      data: { employee: await employeeDisplay(obj, req, true) },
+    });
   };
 }
 

@@ -1,3 +1,5 @@
+import TeamModel from "../../OrganizationModule/models/Team";
+import { requireCompanyOwner } from "../../TenantModule/services/companyContext";
 import { NextFunction, Response } from "express";
 import { AuthenticatedRequest } from "../../AuthModule/utils/types";
 import { writeAudit } from "../../AuditModule/utils/audit";
@@ -58,6 +60,15 @@ export class AccessControllerClass extends BaseControllerClass<RoleAssignmentCla
     res: Response,
     next: NextFunction,
   ) => {
+    requireCompanyOwner(req.auth!);
+    if (
+      /^(organization admin|company admin|owner|super admin)$/i.test(
+        String(req.body.name || "").trim(),
+      )
+    )
+      throw new ValidationException(
+        "This role name is reserved for the single company admin",
+      );
     const { isValid, errorMessages, postData } = await this.validateData({
       data: req.body,
       validationRules: {
@@ -134,6 +145,7 @@ export class AccessControllerClass extends BaseControllerClass<RoleAssignmentCla
     res: Response,
     next: NextFunction,
   ) => {
+    requireCompanyOwner(req.auth!);
     const organizationId = req.auth!.organizationId!;
 
     const { isValid, errorMessages, postData } = await this.validateData({
@@ -169,6 +181,10 @@ export class AccessControllerClass extends BaseControllerClass<RoleAssignmentCla
       baseFilter: false,
     });
 
+    if (role?.name === "Organization Admin")
+      throw new ValidationException(
+        "Use ownership transfer to change the company admin",
+      );
     if (!employee || !role) {
       return next(
         new ValidationException({
@@ -182,6 +198,29 @@ export class AccessControllerClass extends BaseControllerClass<RoleAssignmentCla
         new ValidationException({ scopeId: "Required for team scope" }),
       );
     }
+
+    if (
+      postData.scopeType === "team" &&
+      !(await TeamModel.exists({
+        _id: postData.scopeId,
+        organizationId,
+        status: "active",
+        isDeleted: { $ne: true },
+      }))
+    )
+      throw new ValidationException("Choose a team in this company");
+    if (
+      postData.scopeId &&
+      postData.scopeType === "organization" &&
+      postData.scopeId !== organizationId
+    )
+      throw new ValidationException("Invalid company scope");
+    if (
+      postData.scopeId &&
+      postData.scopeType === "self" &&
+      postData.scopeId !== employee.id
+    )
+      throw new ValidationException("Invalid employee scope");
 
     const assignment = await this.dbUpsertRecord({
       readFilter: {
@@ -218,6 +257,7 @@ export class AccessControllerClass extends BaseControllerClass<RoleAssignmentCla
     res: Response,
     next: NextFunction,
   ) => {
+    requireCompanyOwner(req.auth!);
     const assignment = await this.dbUpdateRecord({
       readFilter: {
         _id: req.params.id,

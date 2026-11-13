@@ -1,3 +1,4 @@
+import { mongoRef, mongoRefs } from "../../common/mongoReferences";
 import TypeGoose, { DocumentType, index, prop } from "@typegoose/typegoose";
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { constants } from "../../node-base/constants";
@@ -5,7 +6,7 @@ const { getModelForClass } = TypeGoose;
 
 @index({ organizationId: 1, name: 1 }, { unique: true })
 export class RoleClass extends BaseModelClass<RoleClass> {
-  @prop() public organizationId?: string;
+  @mongoRef("OrganizationClass") public organizationId?: string;
   @prop({ required: true }) public name!: string;
   @prop() public description?: string;
   @prop({ type: () => [String], default: [] }) public permissions!: string[];
