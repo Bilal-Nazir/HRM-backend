@@ -43,5 +43,10 @@ writes after migration, so review and preserve subsequent activity first.
 
 The release passed 78 backend unit checks, 56 frontend checks, 16 database-backed
 tenancy checks, the restored-data rehearsal, both Linux Docker builds and live
-API checks. Google sign-in remains disabled until the Google Web client ID is
-configured in the backend deployment and its authorized origins are set.
+API checks. The existing Google Web client ID was subsequently configured in the
+backend deployment, and both Compose templates now forward it into the container.
+The public configuration reports Google sign-in enabled, and the Google-rendered
+button was verified on `https://app.bemyadmin.com/login`. The login headings and
+portal role badges were removed in frontend commit `5fed7c6`; its GitHub and
+Cloudflare deployment checks passed. This uses the popup JavaScript callback flow
+and the authorized JavaScript origin, without a redirect URI or client secret.
