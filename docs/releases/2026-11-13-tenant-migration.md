@@ -1,0 +1,45 @@
+# Production tenant migration — 2026-11-13
+
+The operator explicitly approved migrating production with downtime. The previous
+HTTP backend and its background workers were stopped before the final backup.
+
+- Backend source: `8f180eae7cfcfeb6b2508a05ad3a191dd531be2e`.
+- Frontend source: `712e49c104ed81604409b17fb4d9ff25e70a6ed2`.
+- All 3,395 documents in the final backup restored successfully into an isolated
+  local database. All 3,395 original document IDs were verified present in
+  production after migration.
+- 3,383 records had legacy references converted to BSON ObjectIds; eight company
+  memberships and the existing company's owner were backfilled. No accounts were
+  merged. The final dry-run reported zero reference updates and zero blockers.
+- The existing Super Admin retained its platform access. No passwords were reset.
+  Email identity migration invalidates affected old sessions; sign in again.
+- Both AWS runtime images were built before downtime and deployed together. Both
+  containers and the public API health endpoint passed checks. Temporary sessions
+  verified Super Admin/company/employee/attendance/project APIs and employee
+  session/company/attendance/task APIs, then were revoked.
+- The frontend commit was pushed to its auto-deploy repository. Cloudflare's
+  separate Workers build failed; its private build log is pending from the account
+  owner. Do not treat the custom-domain frontend as updated yet. AWS has the new
+  frontend; the public API has the migrated backend.
+
+## Backups and rollback
+
+The stopped-writer backup is retained privately on the server at
+`/opt/hrm/backups/hrm-prod-before-tenants-20261113.archive.gz` and off-server in the
+backend checkout's ignored `backups/` directory. Both copies have SHA-256:
+
+`1c052c4a035a295ba248390bbfb5ba36da412affa47489066a08f2241b310b3e`
+
+The previous image references are in
+`/opt/hrm/backups/images-before-tenants-20261113.env`. Keep the previous images and
+backup until rollout is accepted. Rollback requires stopping writes, restoring
+the database backup and restoring both application images together; never start
+the old backend against the migrated database. Restoring the backup discards any
+writes after migration, so review and preserve subsequent activity first.
+
+## Validation and remaining setup
+
+The release passed 78 backend unit checks, 56 frontend checks, 16 database-backed
+tenancy checks, the restored-data rehearsal, both Linux Docker builds and live
+API checks. Google sign-in remains disabled until the Google Web client ID is
+configured in the backend deployment and its authorized origins are set.

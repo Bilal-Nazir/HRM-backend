@@ -55,8 +55,9 @@ Do not deploy just the frontend: this changes the authentication contract.
    invitation acceptance with the exact invited email, ownership transfer,
    cross-company access denial, attendance, task timers, announcements, and reports.
 
-The production database has **not** been modified by implementing this change.
-Use the deployment account to execute the reviewed migration. For rollback after
+The production migration was applied on 2026-11-13 during an explicitly approved
+maintenance window; see [the release record](releases/2026-11-13-tenant-migration.md).
+For other installations, use the deployment account to execute the reviewed migration. For rollback after
 migration, stop writes and restore the backup alongside the old application;
 old code expects string references and cannot simply read the new BSON types.
 
