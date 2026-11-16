@@ -6,6 +6,7 @@ import {
 import MembershipModel from "../../TenantModule/models/CompanyMembership";
 import {
   resolveCompanyContext,
+  defaultCompanyForLogin,
   sessionProfile,
 } from "../../TenantModule/services/companyContext";
 import { sendCompanySession } from "../../TenantModule/controllers/CompanyController";
@@ -56,6 +57,9 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
       !["admin", "employee"].includes(auth.accountType || "")
     ) {
       throw new UnauthenticatedException("Account is inactive or unavailable");
+    }
+    if (auth.organizationId && user.lastOrganizationId !== auth.organizationId) {
+      await UserModel.updateOne({ _id: user.id }, { $set: { lastOrganizationId: auth.organizationId } });
     }
     res.set("Cache-Control", "no-store");
     return sendResponseObject({
@@ -177,26 +181,7 @@ export class AuthControllerClass extends BaseControllerClass<UserClass> {
   };
 
   private defaultCompany = async (user: any): Promise<string | undefined> => {
-    // Super Admin starts in the platform company manager.
-    if (user.isPlatformAdmin) return undefined;
-    const memberships = await MembershipModel.find({
-      userId: user.id,
-      status: "active",
-      isDeleted: { $ne: true },
-    });
-    const companies = await OrganizationModel.find({
-      status: "active",
-      isDeleted: { $ne: true },
-      $or: [
-        { ownerUserId: user.id },
-        {
-          _id: {
-            $in: memberships.map((membership) => membership.organizationId),
-          },
-        },
-      ],
-    }).limit(2);
-    return companies.length === 1 ? companies[0].id : undefined;
+    return defaultCompanyForLogin(user);
   };
 
   public googleConfigurationController = async (_req: Request, res: Response) =>

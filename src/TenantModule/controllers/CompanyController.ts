@@ -38,6 +38,12 @@ export async function sendCompanySession(
   code = 200,
 ) {
   const auth = await resolveCompanyContext(user, organizationId);
+  if (auth.organizationId) {
+    await UserModel.updateOne(
+      { _id: user.id, isActive: true, isDeleted: { $ne: true } },
+      { $set: { lastOrganizationId: auth.organizationId } },
+    );
+  }
   const tokens = await generateSessionTokens(auth);
   await revokeSession(
     req.headers.authorization?.replace(/^Bearer /, ""),

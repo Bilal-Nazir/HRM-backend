@@ -7,6 +7,7 @@ import TypeGoose, {
 import { BaseModelClass, baseModelOptions } from "../../node-base/baseClasses";
 import { OrganizationClass } from "../../OrganizationModule/models/Organization";
 import { constants } from "../../node-base/constants";
+import { mongoRef } from "../../common/mongoReferences";
 
 const { getModelForClass } = TypeGoose;
 
@@ -28,6 +29,7 @@ const { getModelForClass } = TypeGoose;
 @index({ loginId: 1, isDeleted: 1 })
 @index({ legacyLoginIds: 1 }, { sparse: true })
 export class UserClass extends BaseModelClass<UserClass> {
+  @mongoRef("OrganizationClass") public lastOrganizationId?: string;
   @prop({ ref: () => OrganizationClass })
   public organizationId?: Ref<OrganizationClass>;
 

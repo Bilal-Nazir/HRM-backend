@@ -130,6 +130,51 @@ export async function currentCompanyContext(
     return { user, auth: await resolveCompanyContext(user) };
   }
 }
+
+// Revalidate remembered companies on every login; a saved preference is never
+// evidence of membership or permission to enter a suspended/deleted company.
+export async function defaultCompanyForLogin(
+  user: any,
+): Promise<string | undefined> {
+  const memberships = user.isPlatformAdmin
+    ? []
+    : await MembershipModel.find({
+        userId: user.id,
+        status: "active",
+        isDeleted: { $ne: true },
+      }).select("organizationId");
+  const companies = await OrganizationModel.find({
+    status: "active",
+    isDeleted: { $ne: true },
+    ...(!user.isPlatformAdmin && {
+      $or: [
+        { ownerUserId: user.id },
+        { _id: { $in: memberships.map((member) => member.organizationId) } },
+      ],
+    }),
+  }).sort({ createdAt: 1, _id: 1 });
+  const preferred = [user.lastOrganizationId, user.organizationId]
+    .filter(Boolean)
+    .map(String);
+  const ordered = [
+    ...preferred
+      .map((id) => companies.find((company) => company.id === id))
+      .filter(Boolean),
+    ...companies,
+  ];
+  const seen = new Set<string>();
+  for (const company of ordered) {
+    if (!company || seen.has(company.id)) continue;
+    seen.add(company.id);
+    try {
+      await resolveCompanyContext(user, company.id);
+      return company.id;
+    } catch (error) {
+      if (!(error instanceof ForbiddenException)) throw error;
+    }
+  }
+  return undefined;
+}
 export function sessionProfile(user: any, auth: AuthUser) {
   const {
     userId,

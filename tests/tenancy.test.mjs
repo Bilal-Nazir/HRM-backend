@@ -171,6 +171,33 @@ test("multi-company membership, isolation, ownership, invitations, BSON refs and
         companyOther = c.body.data.user.organizationId;
       },
     );
+    await t.test("login reopens a valid last company and falls back safely to the default", async () => {
+      const login = (actor, portal = "employee", organizationSlug) => request("/auth/login", null, "POST", { loginId: actor.account.loginId, password, portal, ...(organizationSlug && {organizationSlug}) });
+      await User.updateOne({_id: owner.account.id}, {$unset:{lastOrganizationId:1}});
+      let result = await login(owner);
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.body.data.user.organizationId, companyA);
+      result = await login(owner, "employee", "company-b");
+      assert.equal(result.body.data.user.organizationId, companyB);
+      assert.equal((await login(owner)).body.data.user.organizationId, companyB);
+      const raw = await User.collection.findOne({_id: owner.account._id});
+      assert.ok(raw.lastOrganizationId instanceof mongoose.Types.ObjectId);
+      const switched = await request(`/companies/${companyA}/switch`, owner, "POST");
+      assert.equal(switched.status, 200);
+      Object.assign(owner, switched.body.data);
+      assert.equal((await login(owner)).body.data.user.organizationId, companyA);
+      await User.updateOne({_id: owner.account.id}, {$set:{lastOrganizationId:companyB}});
+      await Org.updateOne({_id:companyB}, {$set:{status:"suspended"}});
+      try { assert.equal((await login(owner)).body.data.user.organizationId, companyA); }
+      finally { await Org.updateOne({_id:companyB}, {$set:{status:"active"}}); }
+      await User.updateOne({_id: owner.account.id}, {$set:{lastOrganizationId:companyOther}});
+      assert.equal((await login(owner)).body.data.user.organizationId, companyA);
+      assert.equal((await login(platform, "admin")).body.data.user.organizationId, companyA);
+      const platformSwitch = await request(`/companies/${companyB}/switch`, platform, "POST");
+      assert.equal(platformSwitch.status, 200);
+      Object.assign(platform, platformSwitch.body.data);
+      assert.equal((await login(platform, "admin")).body.data.user.organizationId, companyB);
+    });
     await t.test("company admins use the user login and Super Admin alone uses the admin login", async () => {
       for (const organizationSlug of [undefined, "company-a"]) {
         const credentials = { loginId: owner.account.loginId, password, ...(organizationSlug && { organizationSlug }) };
