@@ -16,9 +16,11 @@ import AnnouncementRouter from "../AnnouncementModule/routes";
 import ProjectRouter from "../ProjectModule/routes";
 import NotificationRouter from "../NotificationModule/routes";
 import ChatRouter from "../ChatModule/routes";
+import { HiringRouter, CareersRouter } from "../HiringModule/routes";
 
 const registerRoutes = (app: Express) => {
   app.use("/companies", TenantRouter);
+  app.use("/careers", CareersRouter);
   app.use(
     [
       "/employee",
@@ -48,6 +50,7 @@ const registerRoutes = (app: Express) => {
   app.use("/projects", ProjectRouter);
   app.use("/notifications", NotificationRouter);
   app.use("/chat", ChatRouter);
+  app.use("/hiring", HiringRouter);
   app.get("/health", (_req: Request, res: Response) => {
     res.json({ message: "HRM backend is running" });
   });

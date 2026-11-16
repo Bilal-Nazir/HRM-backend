@@ -13,7 +13,8 @@
     "migrate:tenants": "npm run build && node --import=extensionless/register scripts/migrate-tenants.mjs",
     "migrate:tenants:built": "node --import=extensionless/register scripts/migrate-tenants.mjs",
     "test:tenants": "tsc -p . --outDir tmp/tenant-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/tenancy.test.mjs",
-    "test:collaboration": "tsc -p . --outDir tmp/collaboration-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/collaboration.test.mjs"
+    "test:collaboration": "tsc -p . --outDir tmp/collaboration-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/collaboration.test.mjs",
+    "test:hiring": "tsc -p . --outDir tmp/hiring-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/hiring.test.mjs"
   },
   "dependencies": {
     "@typegoose/typegoose": "^12.11.0",
