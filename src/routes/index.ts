@@ -15,6 +15,7 @@ import TermsRouter from "../TermsModule/routes";
 import AnnouncementRouter from "../AnnouncementModule/routes";
 import ProjectRouter from "../ProjectModule/routes";
 import NotificationRouter from "../NotificationModule/routes";
+import ChatRouter from "../ChatModule/routes";
 
 const registerRoutes = (app: Express) => {
   app.use("/companies", TenantRouter);
@@ -30,6 +31,7 @@ const registerRoutes = (app: Express) => {
       "/announcements",
       "/projects",
       "/notifications",
+      "/chat",
     ],
     authMiddleware(),
     requireOrganization,
@@ -45,6 +47,7 @@ const registerRoutes = (app: Express) => {
   app.use("/announcements", AnnouncementRouter);
   app.use("/projects", ProjectRouter);
   app.use("/notifications", NotificationRouter);
+  app.use("/chat", ChatRouter);
   app.get("/health", (_req: Request, res: Response) => {
     res.json({ message: "HRM backend is running" });
   });

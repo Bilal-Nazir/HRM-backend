@@ -3,8 +3,13 @@ import { Router } from "express";
 import { asyncWrapper } from "../../node-base/utils";
 import AuthController from "../controllers/AuthController";
 import { authMiddleware } from "../utils/authMiddleware";
+import { ownProfile, updatePhoto, removePhoto, personPhoto } from "../controllers/ProfileController";
 
 const AuthRouter = Router();
+AuthRouter.get("/profile", authMiddleware([], true), asyncWrapper(ownProfile));
+AuthRouter.put("/profile/photo", authMiddleware([], true), asyncWrapper(updatePhoto));
+AuthRouter.delete("/profile/photo", authMiddleware([], true), asyncWrapper(removePhoto));
+AuthRouter.get("/people/:userId/photo", authMiddleware([], true), asyncWrapper(personPhoto));
 AuthRouter.get(
   "/session",
   authMiddleware([], true),

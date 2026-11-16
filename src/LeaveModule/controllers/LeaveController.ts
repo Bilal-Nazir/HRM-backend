@@ -15,6 +15,8 @@ import { BaseControllerClass } from "../../node-base/baseClasses";
 import { validationRulesType } from "../../node-base/validator";
 import { LeaveRequestClass } from "../models/LeaveRequest";
 import { constants } from "../../node-base/constants";
+import { isValidObjectId } from "mongoose";
+import { isRequestAdmin, managedRequestEmployeeIds, requestReviewerEmployeeIds } from "../services/requestAccess";
 import {
   createNotifications,
   notifyEmployees,
@@ -65,10 +67,13 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       !["pending", "approved", "rejected", "cancelled"].includes(String(status))
     )
       throw new ValidationException("Invalid leave status");
+    const managedIds = isRequestAdmin(req.auth!) ? null : await managedRequestEmployeeIds(req.auth!);
+    if (managedIds && !managedIds.length && !req.auth!.permissions.includes("leave.manage")) throw new ForbiddenException();
     const readFilter = {
       organizationId,
+      ...(managedIds && { employeeId: { $in: employeeId ? managedIds.filter(id => id === employeeId) : managedIds } }),
       ...(status && { status }),
-      ...(employeeId && { employeeId }),
+      ...(!managedIds && employeeId && { employeeId }),
       ...(from && { endDate: { $gte: new Date(`${from}T00:00:00.000Z`) } }),
       ...(to && { startDate: { $lte: new Date(`${to}T23:59:59.999Z`) } }),
       isDeleted: { $ne: true },
@@ -348,9 +353,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
     })
       .select("firstName lastName managerEmployeeId")
       .lean();
-    const managerEmployeeIds = requester?.managerEmployeeId
-      ? [String(requester.managerEmployeeId)]
-      : [];
+    const managerEmployeeIds = await requestReviewerEmployeeIds(organizationId, employeeId);
     const managerRecipients = await userRecipientsForEmployees(
       organizationId,
       managerEmployeeIds,
@@ -373,7 +376,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       type: `${requestKind}.requested`,
       title: `New ${requestLabel} request`,
       message: `${requesterName} submitted a ${requestLabel} request for ${obj.totalDays} day${obj.totalDays === 1 ? "" : "s"}.`,
-      href: "/leave",
+      href: `/leave/${obj.id}`,
     });
 
     return sendResponseObject({
@@ -407,6 +410,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
   };
 
   public viewController = async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.auth!.employeeId) return sendResponseObject({ res, data: { leaveRequests: [], totalCount: 0, page: 1, lastPage: 0 } });
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.size) || 20, 1), 100);
 
@@ -447,33 +451,26 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
     req: AuthenticatedRequest,
     res: Response,
   ) => {
-    const directReports = await this.dbReadRecords({
-      Collection: EmployeeModel,
-      readFilter: {
-        organizationId: req.auth!.organizationId,
-        managerEmployeeId: req.auth!.employeeId,
-      },
-      selectFields: ["_id"],
-      baseFilter: false,
-    });
-    const employeeIds = directReports.map((employee) => employee.id);
-    const canManageAll = req.auth!.permissions.some((permission) =>
-      ["*", "leave.manage"].includes(permission),
-    );
+    const employeeIds = await managedRequestEmployeeIds(req.auth!);
+    const canManageAll = isRequestAdmin(req.auth!);
+    if (!canManageAll && !employeeIds.length && !req.auth!.permissions.includes("leave.approve")) throw new ForbiddenException();
     const objs = await this.dbReadRecords({
       readFilter: {
         organizationId: req.auth!.organizationId,
         ...(!canManageAll && { employeeId: { $in: employeeIds } }),
         status: "pending",
+        isDeleted: { $ne: true },
       },
       sort: { createdAt: 1 },
       baseFilter: false,
     });
+    const people = await EmployeeModel.find({ organizationId: req.auth!.organizationId, _id: { $in: objs.map(obj => obj.employeeId) } }).select("firstName lastName employeeCode");
+    const names = new Map(people.map(person => [person.id, { name: `${person.firstName} ${person.lastName}`, employeeCode: person.employeeCode }]));
     return sendResponseObject({
       res,
       data: {
         [this._modelNamePlural]: await Promise.all(
-          objs.map((obj) => obj.display({ detail: true })),
+          objs.map(async (obj) => ({ ...(await obj.display({ detail: true })), employee: names.get(obj.employeeId) || null })),
         ),
       },
     });
@@ -484,6 +481,9 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
     res: Response,
     next: NextFunction,
   ) => {
+    if (!isRequestAdmin(req.auth!)) return next(new ForbiddenException("Only a company admin or Super Admin can approve or reject requests. Managers may add comments."));
+    if (!isValidObjectId(String(req.params.id))) return next(new ValidationException("Invalid request ID"));
+    if (req.body.comment !== undefined && (typeof req.body.comment !== "string" || req.body.comment.length > 4000)) return next(new ValidationException("Decision comment must be at most 4000 characters"));
     if (!["approved", "rejected"].includes(req.body.status)) {
       return next(
         new ValidationException("status must be approved or rejected"),
@@ -495,6 +495,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
         _id: req.params.id,
         organizationId: req.auth!.organizationId,
         status: "pending",
+        isDeleted: { $ne: true },
       },
       baseFilter: false,
     });
@@ -502,21 +503,11 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       return next(new ObjectNotFoundException("Pending leave request"));
     }
 
-    const canManageAll =
-      req.auth!.permissions.includes("*") ||
-      req.auth!.permissions.includes("leave.manage");
-    if (!canManageAll) {
-      return next(
-        new ForbiddenException(
-          "Only HR or an administrator can approve or reject requests. Managers may add remarks.",
-        ),
-      );
-    }
-
     const updatedObj = await this.dbUpdateRecord({
       data: {
         status: req.body.status,
         reviewedByEmployeeId: req.auth!.employeeId,
+        reviewedByUserId: req.auth!.userId,
         reviewedAt: new Date(),
         reviewComment: req.body.comment,
       },
@@ -524,6 +515,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
         _id: obj.id,
         organizationId: req.auth!.organizationId,
         status: "pending",
+        isDeleted: { $ne: true },
       },
       baseFilter: false,
     });
@@ -553,7 +545,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       message: `Your ${requestLabel.toLowerCase()} request has been ${req.body.status}.${
         req.body.comment ? ` ${req.body.comment}` : ""
       }`,
-      href: "/leave",
+      href: `/leave/${obj.id}`,
     });
 
     return sendResponseObject({
@@ -564,30 +556,22 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
     });
   };
 
-  public managerCommentController = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    const comment = String(req.body.comment || "").trim();
-    if (!comment || comment.length > 1000) return next(new ValidationException("A remark between 1 and 1000 characters is required"));
-    const obj = await this.dbReadRecord({ readFilter: { _id: req.params.id, organizationId: req.auth!.organizationId, status: "pending" }, baseFilter: false });
-    if (!obj) return next(new ObjectNotFoundException("Pending leave request"));
-    const employee = await this.dbReadRecord({ Collection: EmployeeModel, readFilter: { _id: obj.employeeId, organizationId: req.auth!.organizationId, managerEmployeeId: req.auth!.employeeId }, baseFilter: false });
-    if (!employee) return next(new ForbiddenException("Only the employee's manager can add a remark"));
-    const updated = await this.dbUpdateRecord({ data: { managerComment: comment, managerCommentedAt: new Date(), managerCommentedByEmployeeId: req.auth!.employeeId }, readFilter: { _id: obj.id, organizationId: req.auth!.organizationId, status: "pending" }, baseFilter: false });
-    return sendResponseObject({ res, data: { [this._modelName]: await updated!.display({ detail: true }) } });
-  };
-
   public cancelController = async (
     req: AuthenticatedRequest,
     res: Response,
     next: NextFunction,
   ) => {
+    if (!req.auth!.employeeId) return next(new ForbiddenException("An employee profile is required to cancel a request"));
+    if (!isValidObjectId(String(req.params.id))) return next(new ValidationException("Invalid request ID"));
     const obj = await this.dbUpdateRecord({
       readFilter: {
         _id: req.params.id,
         organizationId: req.auth!.organizationId,
         employeeId: req.auth!.employeeId,
         status: "pending",
+        isDeleted: { $ne: true },
       },
-      data: { status: "cancelled" },
+      data: { status: "cancelled", cancelledAt: new Date() },
       baseFilter: false,
     });
     if (!obj) {

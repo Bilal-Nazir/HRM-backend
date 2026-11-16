@@ -36,6 +36,8 @@ export class UserClass extends BaseModelClass<UserClass> {
 
   @prop({ trim: true, lowercase: true }) public email?: string;
   @prop({ trim: true }) public name?: string;
+  @prop() public photoVersion?: string;
+  @prop({ type: () => Buffer, select: false }) public photoData?: Buffer;
   @prop({ select: false }) public googleSubject?: string;
   @prop({ type: () => [String], default: [] }) public legacyLoginIds!: string[];
 

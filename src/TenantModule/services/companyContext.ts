@@ -155,6 +155,7 @@ export function sessionProfile(user: any, auth: AuthUser) {
     loginId: user.loginId,
     email: user.email,
     name: user.name,
+    photoVersion: user.photoVersion,
   };
 }
 export function requireCompanyOwner(auth: AuthUser) {

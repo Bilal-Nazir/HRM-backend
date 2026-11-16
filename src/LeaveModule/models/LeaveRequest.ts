@@ -20,11 +20,13 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
   })
   public status!: string;
   @mongoRef("EmployeeClass") public reviewedByEmployeeId?: string;
+  @mongoRef("UserClass") public reviewedByUserId?: string;
   @prop() public reviewedAt?: Date;
   @prop() public reviewComment?: string;
   @prop() public managerComment?: string;
   @prop() public managerCommentedAt?: Date;
   @mongoRef("EmployeeClass") public managerCommentedByEmployeeId?: string;
+  @prop() public cancelledAt?: Date;
 
   public async display(
     this: DocumentType<LeaveRequestClass>,
@@ -65,6 +67,8 @@ export class LeaveRequestClass extends BaseModelClass<LeaveRequestClass> {
         [constants.fields.LeaveRequest.reviewedAt]: this.reviewedAt,
         [constants.fields.LeaveRequest.reviewComment]: this.reviewComment,
         managerComment: this.managerComment,
+        reviewedByUserId: this.reviewedByUserId,
+        cancelledAt: this.cancelledAt,
         managerCommentedAt: this.managerCommentedAt,
         managerCommentedByEmployeeId: this.managerCommentedByEmployeeId,
         [constants.fields.createdAt]: this.createdAt,

@@ -5,11 +5,11 @@ import {
 } from "../../AuthModule/utils/authMiddleware";
 import { asyncWrapper } from "../../node-base/utils";
 import LeaveController from "../controllers/LeaveController";
+import { requestDetails, addRequestComment } from "../controllers/RequestDetailsController";
 const router = Router();
 router.use(authMiddleware(), requireOrganization);
 router.get(
   "/requests/manage",
-  authMiddleware(["leave.manage"]),
   asyncWrapper(LeaveController.manageController),
 );
 router.get(
@@ -44,19 +44,18 @@ router.get(
 );
 router.get(
   "/requests/pending",
-  authMiddleware(["leave.approve"]),
   asyncWrapper(LeaveController.pendingController),
 );
 router.patch(
   "/requests/:id/review",
-  authMiddleware(["leave.approve"]),
   asyncWrapper(LeaveController.reviewController),
 );
 router.patch(
   "/requests/:id/manager-comment",
-  authMiddleware(["leave.approve"]),
-  asyncWrapper(LeaveController.managerCommentController),
+  asyncWrapper(addRequestComment),
 );
+router.get("/requests/:id", asyncWrapper(requestDetails));
+router.post("/requests/:id/comments", asyncWrapper(addRequestComment));
 router.patch(
   "/requests/:id/cancel",
   authMiddleware(["leave.request"]),

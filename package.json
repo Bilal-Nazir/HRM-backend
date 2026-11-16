@@ -12,7 +12,8 @@
     "test:projects": "tsc -p . --outDir tmp/project-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/project-management.test.mjs",
     "migrate:tenants": "npm run build && node --import=extensionless/register scripts/migrate-tenants.mjs",
     "migrate:tenants:built": "node --import=extensionless/register scripts/migrate-tenants.mjs",
-    "test:tenants": "tsc -p . --outDir tmp/tenant-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/tenancy.test.mjs"
+    "test:tenants": "tsc -p . --outDir tmp/tenant-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/tenancy.test.mjs",
+    "test:collaboration": "tsc -p . --outDir tmp/collaboration-test-build && node --import=extensionless/register --test --test-force-exit --test-timeout=60000 tests/collaboration.test.mjs"
   },
   "dependencies": {
     "@typegoose/typegoose": "^12.11.0",
@@ -26,6 +27,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.12.1",
     "redis": "^4.7.0",
+    "sharp": "0.35.5",
     "winston": "^3.19.0"
   },
   "devDependencies": {
