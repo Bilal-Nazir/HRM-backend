@@ -599,6 +599,134 @@ test(
           );
         },
       );
+      await t.test("daily workspace counts personal work, clips at midnight and excludes other tenants", async () => {
+        const { reportDay, reportMidnight, nextReportDay } = await import(root + "AttendanceModule/utils/taskActivityReport.js");
+        const zone = "Asia/Karachi", at = new Date(), day = reportDay(at, zone), midnight = reportMidnight(day, zone);
+        const previous = new Date(midnight.getTime() - 86400000).toISOString().slice(0, 10);
+        const columns = {};
+        for (const [order, category] of ["todo", "in_progress", "paused", "done"].entries()) columns[category] = await M.WorkflowStatusClass.create({ organizationId: a.org.id, projectId: project.id, name: category, order, category });
+        let number = 100;
+        const task = (title, category, other = {}) => M.ProjectTaskClass.create({ organizationId: a.org.id, projectId: project.id, createdBy: a.owner.account.id, key: `ALPHA-${number}`, issueNumber: number++, title, workflowStatusId: columns[category].id, assigneeEmployeeIds: [ben.employee.id], ...other });
+        const due = await task("Today's work", "in_progress", { dueDate: new Date(day), startDate: new Date(at.getTime() - 30000) });
+        const paused = await task("Waiting for admin", "paused", { autoPaused: true });
+        const overdue = await task("Late work", "todo", { dueDate: new Date(previous) });
+        const done = await task("Finished today", "done", { completedAt: at });
+        const oldDone = await task("Previously finished", "done", { completedAt: new Date(midnight.getTime() - 1000) });
+        const someoneElse = await task("Another person's task", "in_progress", { assigneeEmployeeIds: [pm.employee.id] });
+        const deleted = await task("Removed task", "todo", { isDeleted: true });
+        const foreignTask = await task("Another company's task", "todo", { organizationId: b.org.id });
+        const end = new Date(Math.min(midnight.getTime() + 1800000, at.getTime()));
+        await M.TaskTimeSessionClass.create([
+          { organizationId: a.org.id, projectId: project.id, taskId: due.id, employeeId: ben.employee.id, startedByUserId: ben.account.id, startedAt: new Date(midnight.getTime() - 1800000), endedAt: end },
+          { organizationId: a.org.id, projectId: project.id, taskId: due.id, employeeId: pm.employee.id, startedByUserId: pm.account.id, startedAt: new Date(at.getTime() - 7200000), endedAt: at },
+          { organizationId: b.org.id, projectId: project.id, taskId: foreignTask.id, employeeId: ben.employee.id, startedByUserId: ben.account.id, startedAt: midnight, endedAt: at },
+        ]);
+        const reminder = await M.ProjectReminderClass.create({ organizationId: a.org.id, projectId: project.id, title: "Project check-in", scheduledAt: new Date(at.getTime() + 60000), createdBy: a.owner.account.id });
+        const response = await request(`/projects/my-day?timezone=${zone}&employeeId=${pm.employee.id}`, ben);
+        assert.equal(response.status, 200, JSON.stringify(response.body));
+        const data = response.body.data;
+        assert.equal(data.day, day);
+        assert.equal(data.stats.assigned, 5);
+        assert.equal(data.stats.backlog, 1);
+        assert.equal(data.stats.inProgress, 1);
+        assert.equal(data.stats.paused, 1);
+        assert.equal(data.stats.dueToday, 1);
+        assert.equal(data.stats.overdue, 1);
+        assert.equal(data.stats.completedToday, 1);
+        assert.equal(data.stats.workedOnToday, end > midnight ? 1 : 0);
+        assert.equal(data.stats.trackedSecondsToday, Math.floor((end - midnight) / 1000));
+        assert.equal(data.stats.runningTimers, 0);
+        for (const row of [due, paused, overdue, done]) assert(data.tasks.some((item) => item.id === row.id));
+        for (const row of [oldDone, someoneElse, deleted, foreignTask]) assert(!data.tasks.some((item) => item.id === row.id));
+        assert.equal(data.tasks.find((item) => item.id === due.id).dueDay, day);
+        assert(data.reminders.some((item) => item.id === reminder.id));
+        assert.equal((await request("/projects/my-day?timezone=Invalid/Timezone", ben)).status, 422);
+        assert.equal((await request("/projects/my-day", a.owner)).status, 403);
+        assert.equal((await request("/projects/my-day", foreign)).body.data.tasks.length, 0);
+        assert.equal((await request("/projects/my-day")).status, 401);
+        // A running log is refreshed independently from somebody else's timer.
+        const runningStart = new Date();
+        await M.TaskTimeSessionClass.create({ organizationId: a.org.id, projectId: project.id, taskId: due.id, employeeId: ben.employee.id, startedByUserId: ben.account.id, startedAt: runningStart });
+        const live = (await request(`/projects/my-day?timezone=${zone}`, ben)).body.data;
+        assert.equal(live.stats.runningTimers, 1);
+        assert(live.tasks.find((item) => item.id === due.id).runningForMe);
+      });
+      await t.test(
+        "new leave and work-from-home requests notify only their company admin",
+        async () => {
+          for (const [kind, day] of [["leave", "2027-01-04"], ["work_from_home", "2027-01-05"]]) {
+            const result = await request("/leave/requests", ben, "POST", {
+              requestKind: kind,
+              ...(kind === "leave" && { leaveTypeId: leaveType.id }),
+              startDate: day,
+              endDate: day,
+              reason: "Notification routing regression check",
+            });
+            assert.equal(result.status, 201, JSON.stringify(result.body));
+            const requestId = result.body.data.leaveRequest.id;
+            const notices = await M.NotificationClass.find({
+              organizationId: a.org.id,
+              type: `${kind}.requested`,
+              href: `/leave/${requestId}`,
+            });
+            assert.deepEqual(notices.map((notice) => notice.recipientUserId), [a.owner.account.id]);
+            const inbox = await request("/notifications?size=50", a.owner);
+            assert.equal(inbox.status, 200);
+            assert(inbox.body.data.notifications.some((notice) => notice.id === notices[0].id));
+            assert.equal(await M.NotificationClass.countDocuments({
+              type: `${kind}.requested`,
+              href: `/leave/${requestId}`,
+              recipientUserId: { $in: [ben, maya, lead, pm, unrelated, foreign, b.owner, platform].map((actor) => actor.account.id) },
+            }), 0);
+          }
+        },
+      );
+      await t.test(
+        "old submission alerts stay out of non-admin inboxes, pagination and unread counts",
+        async () => {
+          const submissionTypes = ["leave.requested", "work_from_home.requested"];
+          for (const actor of [ben, maya, lead, pm, unrelated, viewer, platform]) {
+            const legacy = await M.NotificationClass.create(submissionTypes.map((type) => ({
+              organizationId: a.org.id,
+              recipientUserId: actor.account.id,
+              type,
+              title: "Legacy request alert",
+              message: "Sent by the earlier routing rule",
+              href: `/leave/${leave.id}`,
+              createdAt: new Date("2099-01-01"),
+            })));
+            const personal = await M.NotificationClass.create({
+              organizationId: a.org.id,
+              recipientUserId: actor.account.id,
+              type: "leave.approved",
+              title: "Your request was approved",
+              message: "A personal request update",
+              href: `/leave/${leave.id}`,
+              createdAt: new Date("2098-01-01"),
+            });
+            const expectedUnread = await M.NotificationClass.countDocuments({
+              organizationId: a.org.id,
+              recipientUserId: actor.account.id,
+              type: { $nin: submissionTypes },
+              isDeleted: { $ne: true },
+              readAt: { $exists: false },
+            });
+            const inbox = await request("/notifications?size=1", actor);
+            assert.equal(inbox.status, 200, JSON.stringify(inbox.body));
+            assert.equal(inbox.body.data.unreadCount, expectedUnread);
+            assert.equal(inbox.body.data.notifications.length, 1);
+            assert.equal(inbox.body.data.notifications[0].id, personal.id);
+            assert(!inbox.body.data.notifications.some((notice) => submissionTypes.includes(notice.type)));
+            await request(`/notifications/${legacy[0].id}/read`, actor, "PATCH");
+            assert.equal((await M.NotificationClass.findById(legacy[0].id)).readAt, undefined);
+            await request("/notifications/read-all", actor, "PATCH");
+            assert.equal((await request("/notifications", actor)).body.data.unreadCount, 0);
+            assert((await M.NotificationClass.findById(personal.id)).readAt);
+          }
+          const foreignInbox = await request("/notifications?size=50", b.owner);
+          assert(!foreignInbox.body.data.notifications.some((notice) => notice.href === `/leave/${leave.id}`));
+        },
+      );
       await t.test(
         "requesters, admins, direct managers, team leads and project managers can inspect details",
         async () => {

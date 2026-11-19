@@ -50,6 +50,23 @@ export async function organizationAdminUserIds(organizationId: string) {
   return users.map((user: any) => String(user._id));
 }
 
+// Submission alerts belong to this company's admin, rather than every platform
+// admin or an employee's review/management chain.
+export async function companyAdminUserIds(organizationId: string) {
+  const company = await OrganizationModel.findOne({
+    _id: organizationId,
+    status: "active",
+    isDeleted: { $ne: true },
+  }).select("ownerUserId");
+  if (!company?.ownerUserId) return [];
+  const admin = await UserModel.findOne({
+    _id: company.ownerUserId,
+    isActive: true,
+    isDeleted: { $ne: true },
+  }).select("_id");
+  return admin ? [String(admin._id)] : [];
+}
+
 export async function projectManagerEmployeeIds(
   organizationId: string,
   projectId: string,

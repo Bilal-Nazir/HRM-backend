@@ -2,10 +2,12 @@ import { Router } from "express";
 import { authMiddleware, requireOrganization } from "../../AuthModule/utils/authMiddleware";
 import { asyncWrapper } from "../../node-base/utils";
 import * as controller from "../controllers/ProjectController";
+import { dailyWorkspace } from "../controllers/DailyWorkspaceController";
 
 const router = Router();
 router.use(authMiddleware(), requireOrganization);
 router.get("/my-tasks", asyncWrapper(controller.myTasks));
+router.get("/my-day", asyncWrapper(dailyWorkspace));
 router.get("/dashboard", asyncWrapper(controller.dashboardSummary));
 router.get("/", asyncWrapper(controller.listProjects));
 router.post("/", asyncWrapper(controller.createProject));

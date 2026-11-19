@@ -16,12 +16,11 @@ import { validationRulesType } from "../../node-base/validator";
 import { LeaveRequestClass } from "../models/LeaveRequest";
 import { constants } from "../../node-base/constants";
 import { isValidObjectId } from "mongoose";
-import { isRequestAdmin, managedRequestEmployeeIds, requestReviewerEmployeeIds } from "../services/requestAccess";
+import { isRequestAdmin, managedRequestEmployeeIds } from "../services/requestAccess";
 import {
   createNotifications,
   notifyEmployees,
-  organizationAdminUserIds,
-  userRecipientsForEmployees,
+  companyAdminUserIds,
 } from "../../NotificationModule/services/notificationService";
 
 const dayCount = (start: Date, end: Date) =>
@@ -351,14 +350,9 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       organizationId,
       isDeleted: { $ne: true },
     })
-      .select("firstName lastName managerEmployeeId")
+      .select("firstName lastName")
       .lean();
-    const managerEmployeeIds = await requestReviewerEmployeeIds(organizationId, employeeId);
-    const managerRecipients = await userRecipientsForEmployees(
-      organizationId,
-      managerEmployeeIds,
-    );
-    const adminUserIds = await organizationAdminUserIds(organizationId);
+    const adminUserIds = await companyAdminUserIds(organizationId);
     const requesterName = requester
       ? `${requester.firstName} ${requester.lastName}`.trim()
       : "An employee";
@@ -366,11 +360,7 @@ export class LeaveControllerClass extends BaseControllerClass<LeaveRequestClass>
       requestKind === "work_from_home" ? "work-from-home" : "leave";
     await createNotifications({
       organizationId,
-      recipientUserIds: [
-        ...managerRecipients.keys(),
-        ...adminUserIds,
-      ],
-      recipientEmployees: managerRecipients,
+      recipientUserIds: adminUserIds,
       actorUserId: req.auth!.userId,
       actorEmployeeId: employeeId,
       type: `${requestKind}.requested`,
