@@ -8,6 +8,7 @@ import {
   sendResponseObject,
 } from "../../node-base/utils";
 import AnnouncementModel, { AnnouncementClass } from "../models/Announcement";
+import { notifyOrganizationEmployees } from "../../NotificationModule/services/notificationService";
 
 const fields = constants.fields.Announcement;
 const statuses = constants.statics.enums.Announcement.status;
@@ -16,6 +17,7 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
   _Model = AnnouncementModel;
   _modelName = fields.Announcement;
   _validationRules: validationRulesType = {
+    category: [{ rule: "datatype", datatype: "String" }, { rule: "maxLength", length: 60 }],
     [fields.title]: [
       { rule: "required" },
       { rule: "datatype", datatype: "String" },
@@ -32,6 +34,17 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
     ],
   };
 
+  private notifyPublished(req: AuthenticatedRequest, title: string) {
+    return notifyOrganizationEmployees({
+      organizationId: req.auth!.organizationId!,
+      actorUserId: req.auth!.userId,
+      type: "announcement.published",
+      title: "New announcement",
+      message: title,
+      href: "/announcements",
+    }).catch(console.error);
+  }
+
   private list = async (
     req: AuthenticatedRequest,
     res: Response,
@@ -42,12 +55,17 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
       Math.max(Math.floor(Number(req.query.size)) || 10, 1),
       100,
     );
-    const readFilter = {
+    const category = typeof req.query.category === "string" ? req.query.category.trim().slice(0, 60) : "";
+    const scope = {
       [fields.organizationId]: req.auth!.organizationId,
       isDeleted: { $ne: true },
       ...(publishedOnly ? { [fields.status]: statuses.published } : {}),
     };
-    const [objs, totalCount] = await Promise.all([
+    const readFilter = {
+      ...scope,
+      ...(category === "General" ? { $or: [{ category }, { category: { $exists: false } }] } : category ? { category } : {}),
+    };
+    const [objs, totalCount, categories] = await Promise.all([
       this.dbReadRecords({
         readFilter,
         page,
@@ -57,6 +75,7 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
         baseFilter: false,
       }),
       this.dbCountDocs({ readFilter, baseFilter: false }),
+      AnnouncementModel.distinct("category", scope),
     ]);
     return sendResponseObject({
       res,
@@ -65,6 +84,7 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
           objs.map((obj) => obj.display()),
         ),
         totalCount,
+        categories: [...new Set(["General", ...categories.filter(Boolean)])].sort(),
         page,
         lastPage: Math.ceil(totalCount / limit),
       },
@@ -100,6 +120,7 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
         [fields.createdBy]: req.auth!.userId,
       },
     });
+    if (obj.status === statuses.published) await this.notifyPublished(req, obj.title);
     return sendResponseObject({
       res,
       code: 201,
@@ -125,6 +146,8 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
     if (!isValid) return next(errorMessages);
     const id = postData[constants.fields.id];
     delete postData[constants.fields.id];
+    const previous = await AnnouncementModel.findOne({ _id: id, organizationId: req.auth!.organizationId, isDeleted: { $ne: true } }).select("status");
+    if (!previous) return next(new ObjectNotFoundException("Announcement"));
     const obj = await this.dbUpdateRecord({
       readFilter: {
         [constants.fields._id]: id,
@@ -134,6 +157,7 @@ export class AnnouncementControllerClass extends BaseControllerClass<Announcemen
       baseFilter: false,
     });
     if (!obj) return next(new ObjectNotFoundException("Announcement"));
+    if (previous.status !== statuses.published && obj.status === statuses.published) await this.notifyPublished(req, obj.title);
     return sendResponseObject({
       res,
       data: { [this._modelName]: await obj.display() },

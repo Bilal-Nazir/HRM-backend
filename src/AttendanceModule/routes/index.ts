@@ -6,7 +6,11 @@ import {
 import { asyncWrapper } from "../../node-base/utils";
 import AttendanceController from "../controllers/AttendanceController";
 import * as locationReview from "../controllers/LocationReviewController";
+import * as standup from "../controllers/StandupController";
 const router = Router();
+router.get("/standup", authMiddleware(["attendance.read.self"]), requireOrganization, asyncWrapper(standup.standupStatus));
+router.patch("/standup", authMiddleware(["organization.update"]), requireOrganization, asyncWrapper(standup.updateStandup));
+router.get("/standup/reports", authMiddleware(["organization.update"]), requireOrganization, asyncWrapper(standup.standupReports));
 router.get("/location-requests", authMiddleware(["attendance.read.self"]), requireOrganization, asyncWrapper(locationReview.listLocationRequests));
 router.post("/location-requests", authMiddleware(["attendance.checkin"]), requireOrganization, asyncWrapper(locationReview.createLocationRequest));
 router.patch("/location-requests/:requestId/cancel", authMiddleware(["attendance.checkin"]), requireOrganization, asyncWrapper(locationReview.cancelLocationRequest));

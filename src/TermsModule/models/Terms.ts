@@ -12,6 +12,12 @@ import { UserClass } from "../../AuthModule/models/User";
 const { getModelForClass } = TypeGoose;
 const fields = constants.fields.Terms;
 
+export class PolicyFile {
+  @prop({ required: true }) public id!: string;
+  @prop({ required: true }) public name!: string;
+  @prop({ required: true }) public data!: string;
+}
+
 @index({ [fields.organizationId]: 1 }, { unique: true })
 export class TermsClass extends BaseModelClass<TermsClass> {
   @prop({ required: true, ref: () => OrganizationClass })
@@ -19,6 +25,8 @@ export class TermsClass extends BaseModelClass<TermsClass> {
   @prop({ required: true, trim: true, maxlength: 160 }) public title!: string;
   @prop({ required: true, trim: true, maxlength: 50000 })
   public content!: string;
+  @prop({ type: () => [PolicyFile], default: [], _id: false })
+  public files!: PolicyFile[];
   @prop({ required: true, ref: () => UserClass })
   public updatedBy!: Ref<UserClass>;
 
@@ -44,6 +52,7 @@ export class TermsClass extends BaseModelClass<TermsClass> {
         ...data,
         [fields.title]: this.title,
         [fields.content]: this.content,
+        files: (this.files || []).map(({ id, name }) => ({ id, name })),
         [constants.fields.updatedAt]: this.updatedAt,
       };
     if (detail)

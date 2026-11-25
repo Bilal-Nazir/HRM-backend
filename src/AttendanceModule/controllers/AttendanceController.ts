@@ -30,6 +30,7 @@ import { isValidObjectId } from "mongoose";
 import { dailyTaskActivity, nextReportDay, reportDay, reportMidnight } from "../utils/taskActivityReport";
 import { pauseEmployeeTimersAtCheckout } from "../../ProjectModule/services/checkoutTimerService";
 import { attendanceDeviceForAdmin, attendanceDeviceInfo } from "../utils/deviceInfo";
+import { checkInStandup, checkOutStandup } from "./StandupController";
 
 const attendanceMetrics = (record: AttendanceClass, schedule?: { timezone: string; weeklyPattern: { day: number; startTime: string; endTime: string; working: boolean }[] }) => {
   const hours = record.checkOutAt ? Math.max(0, (new Date(record.checkOutAt).getTime() - new Date(record.checkInAt).getTime()) / 3600000) : 0;
@@ -430,13 +431,17 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       longitude: location?.longitude,
     });
 
+    const organization = await OrganizationModel.findById(organizationId).select("standupEnabled timezone");
+    const standup = await checkInStandup(req, !!organization?.standupEnabled);
+    const checkInAt = new Date();
     const obj = await this.dbInsertRecord({
       data: {
         organizationId,
         employeeId,
         officeLocationId: officeData.office?.id,
-        workDate: new Date().toISOString().slice(0, 10),
-        checkInAt: new Date(),
+        workDate: reportDay(checkInAt, organization?.timezone || "UTC"),
+        checkInAt,
+        ...(standup ? { standup } : {}),
         checkInLocation: location,
         checkInLocationFailure: failure,
         checkInDevice: attendanceDeviceInfo(req),
@@ -524,13 +529,14 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
       longitude: location?.longitude,
     });
 
+    const standupResult = obj.standup ? await checkOutStandup(req, obj.standup) : undefined;
     const checkOutAt = new Date();
     const pausedTasks = await pauseEmployeeTimersAtCheckout({ organizationId, employeeId, userId: req.auth!.userId, at: checkOutAt });
-    const updatedObj = await this.dbUpdateRecord({
-      obj,
-      filterObj: false,
-      data: {
+    const updatedObj = await AttendanceModel.findOneAndUpdate(
+      { _id: obj.id, organizationId, employeeId, checkOutAt: { $exists: false } },
+      { $set: {
         checkOutAt,
+        ...(standupResult ? { standupResult } : {}),
         checkOutDevice: attendanceDeviceInfo(req, checkOutAt),
         checkOutLocation: location,
         checkOutLocationFailure: failure,
@@ -541,8 +547,10 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
           officeData.withinGeofence === false
             ? "flagged"
             : "completed",
-      },
-    });
+      } },
+      { new: true },
+    );
+    if (!updatedObj) return next(new ConflictException("Attendance was already checked out"));
 
     await writeAudit({
       organizationId,
@@ -598,6 +606,22 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
 
     const schedules = await this.scheduleLookup(req.auth!.organizationId!, [req.auth!.employeeId!]);
     const schedule = schedules.get(req.auth!.employeeId!);
+    const dates = objs.map((obj) => obj.workDate).sort();
+    const from = dates[0];
+    const to = dates[dates.length - 1];
+    const organization = await OrganizationModel.findById(req.auth!.organizationId).select("timezone");
+    const timezone = organization?.timezone || "UTC";
+    const sessions = from && to ? await TaskTimeSessionModel.find({
+      organizationId: req.auth!.organizationId,
+      employeeId: req.auth!.employeeId,
+      isDeleted: { $ne: true },
+      startedAt: { $lt: reportMidnight(nextReportDay(to), timezone) },
+      $or: [{ endedAt: { $gt: reportMidnight(from, timezone) } }, { endedAt: { $exists: false } }],
+    }).select("taskId startedAt endedAt") : [];
+    const taskHoursByDate = from && to ? Object.fromEntries(dailyTaskActivity(
+      sessions.map((session) => ({ id: session.id, taskId: String(session.taskId), startedAt: session.startedAt, endedAt: session.endedAt })),
+      [], from, to, timezone,
+    ).map((day) => [day.date, day.seconds / 3600])) : {};
 
     return sendResponseObject({
       res,
@@ -606,6 +630,7 @@ export class AttendanceControllerClass extends BaseControllerClass<AttendanceCla
           objs.map(async (obj) => ({ ...(await obj.display({ detail: true })), ...attendanceMetrics(obj, schedule || undefined) })),
         ),
         totalCount,
+        taskHoursByDate,
         page,
         lastPage: Math.ceil(totalCount / limit),
       },

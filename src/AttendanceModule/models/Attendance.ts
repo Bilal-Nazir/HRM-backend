@@ -27,6 +27,18 @@ export class LocationPoint {
 @index({ organizationId: 1, employeeId: 1, workDate: -1 })
 @index({ organizationId: 1, employeeId: 1, status: 1 })
 export class AttendanceClass extends BaseModelClass<AttendanceClass> {
+  @prop({ type: () => Object })
+  public standup?: {
+    yesterday: { id: string; title: string }[];
+    planned: { id: string; title: string }[];
+    blocker?: { text: string; priority: string };
+  };
+  @prop({ type: () => Object })
+  public standupResult?: {
+    completed: { id: string; title: string }[];
+    pending: { id: string; title: string }[];
+    additional: { id: string; title: string }[];
+  };
   @mongoRef("OrganizationClass", true) public organizationId!: string;
   @mongoRef("EmployeeClass", true) public employeeId!: string;
   @mongoRef("OfficeLocationClass") public officeLocationId?: string;

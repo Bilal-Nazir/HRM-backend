@@ -15,6 +15,7 @@ export class OrganizationClass extends BaseModelClass<OrganizationClass> {
   @prop({ trim: true }) public legalName?: string;
   @prop({ required: true, trim: true, lowercase: true }) public slug!: string;
   @prop({ required: true, default: "UTC" }) public timezone!: string;
+  @prop({ default: false }) public standupEnabled?: boolean;
   @prop({ required: true, default: 0 }) public employeeSequence!: number;
   @prop({ default: "en" }) public defaultLocale?: string;
   @prop({

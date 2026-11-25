@@ -1,6 +1,7 @@
 import { Response } from "express";
 import { isValidObjectId } from "mongoose";
 import { AuthenticatedRequest } from "../../AuthModule/utils/types";
+import { requireStandupToStartWork } from "../../AttendanceModule/controllers/StandupController";
 import EmployeeModel from "../../EmployeeModule/models/Employee";
 import { ConflictException, ForbiddenException, ObjectNotFoundException, ValidationException, sendResponseObject } from "../../node-base/utils";
 import ProjectModel from "../models/Project";
@@ -421,6 +422,7 @@ export const createTask = async (req: AuthenticatedRequest, res: Response) => {
   const initialStatus = workflowStatusId ? await WorkflowStatusModel.findOne({ _id: object(workflowStatusId), organizationId: req.auth!.organizationId, projectId: project.id, isArchived: false, isDeleted: { $ne: true } }) : null;
   if (!initialStatus) throw new ValidationException("Project has no valid default workflow column");
   if (!["todo", "in_progress"].includes(initialStatus.category)) throw new ValidationException("New tasks can only start in Backlog or In Progress");
+  if (timerActionFor(initialStatus) === "start") await requireStandupToStartWork(req);
   const durationMinutes = durationChoice(project, req.body.durationMinutes);
   const sequenced = await ProjectModel.findOneAndUpdate({ _id: project.id }, { $inc: { nextIssueNumber: 1 } }, { new: false });
   if (!sequenced) throw new ObjectNotFoundException("Project");
@@ -534,6 +536,7 @@ export const moveTask = async (req: AuthenticatedRequest, res: Response) => {
   // Timer behaviour is configured per destination column. Neutral columns do
   // not alter the timer, so it can continue across review/QA columns.
   const timerAction = timerActionFor(target);
+  if (timerAction === "start" || target.category === "in_progress") await requireStandupToStartWork(req);
   if (timerAction === "start" && task.durationExtensionRequired) throw new ConflictException("An admin must increase the duration before this task can resume");
   if (timerAction === "start") durationChoice(project, task.durationMinutes, task.durationMinutes);
   task.completionMethod = target.category === "done" ? "manual" : undefined;
@@ -567,6 +570,7 @@ export const updateTaskTimer = async (req: AuthenticatedRequest, res: Response) 
   const snapshot = task.toObject();
   const action = String(req.body.action || "");
   if (!["start", "pause"].includes(action)) throw new ValidationException("Timer action must be start or pause");
+  if (action === "start") await requireStandupToStartWork(req);
   if (action === "start" && task.autoPaused) throw new ForbiddenException("An admin must move this task out of Pause before it can resume");
   if (action === "start" && task.durationExtensionRequired) throw new ForbiddenException("An admin must increase the duration before this task can resume");
   if (action === "start" && task.completedAt) throw new ConflictException("Move this task to an active column before restarting its timer");

@@ -18,6 +18,7 @@ export class AnnouncementClass extends BaseModelClass<AnnouncementClass> {
   @prop({ required: true, ref: () => OrganizationClass })
   public organizationId!: Ref<OrganizationClass>;
   @prop({ required: true, trim: true, maxlength: 160 }) public title!: string;
+  @prop({ trim: true, maxlength: 60, default: "General" }) public category!: string;
   @prop({ required: true, trim: true, maxlength: 5000 })
   public content!: string;
   @prop({
@@ -50,6 +51,7 @@ export class AnnouncementClass extends BaseModelClass<AnnouncementClass> {
       data = {
         ...data,
         [fields.title]: this.title,
+        category: this.category || "General",
         [fields.content]: this.content,
         [fields.status]: this.status,
         [constants.fields.createdAt]: this.createdAt,

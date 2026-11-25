@@ -34,7 +34,7 @@ async function employeeDisplay(
   const canReadPrivate =
     req.auth!.isCompanyOwner ||
     req.auth!.isPlatformAdmin ||
-    employee.id === req.auth!.employeeId;
+    (req.path === "/me" && employee.id === req.auth!.employeeId);
   return employee.display({
     detail: detail && canReadPrivate,
     excludes: canReadPrivate

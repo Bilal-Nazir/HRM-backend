@@ -117,3 +117,14 @@ export async function notifyEmployees(
     recipientEmployees,
   });
 }
+
+export async function notifyOrganizationEmployees(
+  input: Omit<Notice, "recipientUserIds">,
+) {
+  const employeeIds = await EmployeeModel.find({
+    organizationId: input.organizationId,
+    employmentStatus: "active",
+    isDeleted: { $ne: true },
+  }).distinct("_id");
+  await notifyEmployees({ ...input, employeeIds: employeeIds.map(String) });
+}
