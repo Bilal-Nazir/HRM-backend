@@ -9,6 +9,7 @@ import * as locationReview from "../controllers/LocationReviewController";
 import * as standup from "../controllers/StandupController";
 const router = Router();
 router.get("/standup", authMiddleware(["attendance.read.self"]), requireOrganization, asyncWrapper(standup.standupStatus));
+router.get("/standup/tasks", authMiddleware(["attendance.read.self"]), requireOrganization, asyncWrapper(standup.standupTaskOptions));
 router.patch("/standup", authMiddleware(["organization.update"]), requireOrganization, asyncWrapper(standup.updateStandup));
 router.get("/standup/reports", authMiddleware(["organization.update"]), requireOrganization, asyncWrapper(standup.standupReports));
 router.get("/location-requests", authMiddleware(["attendance.read.self"]), requireOrganization, asyncWrapper(locationReview.listLocationRequests));

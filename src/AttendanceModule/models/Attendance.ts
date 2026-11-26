@@ -17,6 +17,8 @@ export class LocationPoint {
   @prop() public reason?: string;
   @prop() public reviewRequestId?: string;
 }
+export type StandupTaskSnapshot = { id: string; key?: string; title: string };
+
 @index(
   { organizationId: 1, locationRequestId: 1 },
   {
@@ -29,15 +31,16 @@ export class LocationPoint {
 export class AttendanceClass extends BaseModelClass<AttendanceClass> {
   @prop({ type: () => Object })
   public standup?: {
-    yesterday: { id: string; title: string }[];
-    planned: { id: string; title: string }[];
+    yesterday?: StandupTaskSnapshot[];
+    planned: StandupTaskSnapshot[];
     blocker?: { text: string; priority: string };
   };
   @prop({ type: () => Object })
   public standupResult?: {
-    completed: { id: string; title: string }[];
-    pending: { id: string; title: string }[];
-    additional: { id: string; title: string }[];
+    completed: StandupTaskSnapshot[];
+    paused?: StandupTaskSnapshot[];
+    pending: StandupTaskSnapshot[];
+    additional?: StandupTaskSnapshot[];
   };
   @mongoRef("OrganizationClass", true) public organizationId!: string;
   @mongoRef("EmployeeClass", true) public employeeId!: string;

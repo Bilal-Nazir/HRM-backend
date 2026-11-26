@@ -2,28 +2,74 @@ import { Response } from "express";
 import { AuthenticatedRequest } from "../../AuthModule/utils/types";
 import OrganizationModel from "../../OrganizationModule/models/Organization";
 import ProjectTaskModel from "../../ProjectModule/models/ProjectTask";
+import ProjectMemberModel from "../../ProjectModule/models/ProjectMember";
+import WorkflowStatusModel from "../../ProjectModule/models/WorkflowStatus";
 import EmployeeModel from "../../EmployeeModule/models/Employee";
-import AttendanceModel from "../models/Attendance";
+import AttendanceModel, { StandupTaskSnapshot } from "../models/Attendance";
 import { ConflictException, sendResponseObject, ValidationException } from "../../node-base/utils";
 import { isValidObjectId } from "mongoose";
+
+const categoriesByStage = {
+  "check-in": ["todo", "in_progress"],
+  "check-out": ["paused", "done"],
+};
+type Stage = keyof typeof categoriesByStage;
 
 function ids(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 200 ||
     value.some((id) => typeof id !== "string" || !isValidObjectId(id))) {
     throw new ValidationException("Select valid tasks for your stand-up.");
   }
-  return [...new Set(value)];
+  return [...new Set(value.map((id: string) => id.toLowerCase()))];
 }
 
-async function taskSnapshots(req: AuthenticatedRequest, selected: string[]) {
+async function eligibleTasks(req: AuthenticatedRequest, stage: Stage, selected?: string[]) {
+  const { organizationId, employeeId } = req.auth!;
+  if (!employeeId || selected?.length === 0) return [];
+  const projects = await ProjectMemberModel.distinct("projectId", {
+    organizationId, employeeId, status: "active", isDeleted: { $ne: true },
+  });
+  if (!projects.length) return [];
+  const columns = await WorkflowStatusModel.find({
+    organizationId, projectId: { $in: projects },
+    category: { $in: categoriesByStage[stage] },
+    isArchived: { $ne: true }, isDeleted: { $ne: true },
+  }).select("projectId name category").lean();
+  if (!columns.length) return [];
+  const columnById = new Map(columns.map((column) => [String(column._id), column]));
   const tasks = await ProjectTaskModel.find({
-    organizationId: req.auth!.organizationId,
-    assigneeEmployeeIds: req.auth!.employeeId,
+    organizationId,
+    projectId: { $in: projects },
+    workflowStatusId: { $in: [...columnById.keys()] },
+    assigneeEmployeeIds: employeeId,
     isDeleted: { $ne: true },
-    _id: { $in: selected },
-  }).select("title");
-  if (tasks.length !== selected.length) throw new ValidationException("Select tasks assigned to you.");
-  return tasks.map((task) => ({ id: task.id, title: task.title }));
+    ...(selected && { _id: { $in: selected } }),
+  }).select("projectId workflowStatusId key title").sort({ updatedAt: -1, _id: -1 }).lean();
+  return tasks.flatMap((task) => {
+    const column = columnById.get(String(task.workflowStatusId));
+    return column && String(column.projectId) === String(task.projectId) ? [{
+      id: String(task._id), key: task.key, title: task.title,
+      column: column.name, category: column.category,
+    }] : [];
+  });
+}
+
+async function selectedTasks(req: AuthenticatedRequest, stage: Stage, selected: string[]) {
+  const tasks = await eligibleTasks(req, stage, selected);
+  if (tasks.length !== selected.length) {
+    const allowed = stage === "check-in" ? "To do or In progress" : "Paused or Done";
+    throw new ValidationException(`Select assigned tasks that are still in ${allowed}. Reopen the form to refresh the list.`);
+  }
+  return tasks;
+}
+
+const snapshot = ({ id, key, title }: StandupTaskSnapshot): StandupTaskSnapshot => ({ id, key, title });
+
+export async function standupTaskOptions(req: AuthenticatedRequest, res: Response) {
+  const stage = req.query.stage;
+  if (stage !== "check-in" && stage !== "check-out") throw new ValidationException("Choose check-in or check-out.");
+  const tasks = await eligibleTasks(req, stage);
+  return sendResponseObject({ res, data: { tasks } });
 }
 
 export async function requireStandupToStartWork(req: AuthenticatedRequest) {
@@ -46,26 +92,23 @@ export async function checkInStandup(req: AuthenticatedRequest, enabled: boolean
   if (input.hasBlocker && (!text || text.length > 240 || /[\r\n]/.test(text) || !["high", "medium", "low"].includes(input.priority))) {
     throw new ValidationException("Enter a one-line blocker and choose its priority.");
   }
-  const [yesterday, planned] = await Promise.all([
-    taskSnapshots(req, ids(input.yesterday)),
-    taskSnapshots(req, ids(input.planned)),
-  ]);
-  return { yesterday, planned, ...(input.hasBlocker ? { blocker: { text, priority: input.priority } } : {}) };
+  const planned = (await selectedTasks(req, "check-in", ids(input.planned))).map(snapshot);
+  return { planned, ...(input.hasBlocker ? { blocker: { text, priority: input.priority } } : {}) };
 }
 
-export async function checkOutStandup(req: AuthenticatedRequest, plan: { planned: { id: string; title: string }[] }) {
+export async function checkOutStandup(req: AuthenticatedRequest, plan: { planned: StandupTaskSnapshot[] }) {
   const input = req.body.standup;
   if (!input) throw new ValidationException("Review your stand-up before checking out.");
-  const completed = ids(input.completed);
-  const additional = ids(input.additional);
-  const planned = new Set(plan.planned.map((task) => task.id));
-  if (completed.some((id) => !planned.has(id)) || additional.some((id) => planned.has(id))) {
-    throw new ValidationException("Review your planned and additional tasks.");
-  }
+  // Accept the previous payload during a rolling release.
+  const selected = input.workedOn === undefined
+    ? ids([...ids(input.completed), ...ids(input.additional)])
+    : ids(input.workedOn);
+  const workedOn = await selectedTasks(req, "check-out", selected);
+  const reported = new Set(selected);
   return {
-    completed: plan.planned.filter((task) => completed.includes(task.id)),
-    pending: plan.planned.filter((task) => !completed.includes(task.id)),
-    additional: await taskSnapshots(req, additional),
+    completed: workedOn.filter((task) => task.category === "done").map(snapshot),
+    paused: workedOn.filter((task) => task.category === "paused").map(snapshot),
+    pending: plan.planned.filter((task) => !reported.has(task.id)),
   };
 }
 
